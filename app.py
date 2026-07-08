@@ -21,14 +21,14 @@ FALLBACK_DATA = [
         "item": 1, "w_min": 1.0, "w_max": 105.0, "l_min": 1.0, "l_max": 115.0, "h_min": 1.0, "h_max": 35.0,
         "layers": 2, "qty_layer": 32, "qty_box": 64,
         "bom_text": "CARTON A-10 = 1 pcs.\nPARTITION 111X393MM = 10 pcs./box\nPARTITION 111x584MM = 18 pcs./box\nPAPER PAD 394X574MM = 3 pcs./box\nESD BAG 7.5\"X10\" = 64 pcs./box",
-        "nx": 8, "ny": 4,  # ตารางหลักขนาด 8x4 ช่องใช้งานจริงต่อหนึ่งเลเยอร์
+        "nx": 8, "ny": 4,  # Standard Grid 8x4 slots
         "type": "standard_grid"
     },
     {
         "item": 2, "w_min": 1.0, "w_max": 105.0, "l_min": 116.0, "l_max": 235.0, "h_min": 1.0, "h_max": 35.0,
         "layers": 2, "qty_layer": 16, "qty_box": 32,
         "bom_text": "CARTON A-10 = 1 pcs.\nPARTITION 111X393MM = 6 pcs./box\nPARTITION 111x584MM = 18 pcs./box\nPAPER PAD 394X574MM = 3 pcs./box\nESD BAG 7.5\"X10\" = 32 pcs./box",
-        "nx": 4, "ny": 4,  # รวมช่องสล็อตในแนวยาว
+        "nx": 4, "ny": 4,  # Grid 4x4 (Merged slots along length)
         "type": "merged_length"
     },
     {
@@ -42,14 +42,14 @@ FALLBACK_DATA = [
         "item": 4, "w_min": 1.0, "w_max": 105.0, "l_min": 116.0, "l_max": 240.0, "h_min": 36.0, "h_max": 80.0,
         "layers": 2, "qty_layer": 8, "qty_box": 16,
         "bom_text": "CARTON A-10 = 1 pcs.\nPARTITION 111X393MM = 6 pcs./box\nPARTITION 111x584MM = 10 pcs./box\nPAPER PAD 394X574MM = 3 pcs./box\nESD BAG 7.5\"X10\" = 16 pcs./box",
-        "nx": 4, "ny": 2,  # ตารางแบบ 4x2 ช่องใหญ่
+        "nx": 4, "ny": 2,  # Grid 4x2
         "type": "merged_both"
     },
     {
         "item": 5, "w_min": 1.0, "w_max": 105.0, "l_min": 116.0, "l_max": 240.0, "h_min": 81.0, "h_max": 170.0,
         "layers": 2, "qty_layer": 4, "qty_box": 8,
         "bom_text": "CARTON A-10 = 1 pcs.\nPARTITION 111X393MM = 6 pcs./box\nPARTITION 111x584MM = 6 pcs./box\nPAPER PAD 394X574MM = 3 pcs./box\nESD BAG 7.5\"X10\" = 8 pcs./box",
-        "nx": 2, "ny": 2,  # ตารางแบบ 2x2 ช่องขนาดใหญ่สุด
+        "nx": 2, "ny": 2,  # Grid 2x2
         "type": "merged_max"
     },
     {
@@ -140,7 +140,7 @@ result = find_matching_package(p_w, p_l, p_h)
 
 # --- SVG REAL BLUEPRINT GENERATION ---
 def draw_partition_svg(rule, pw_val, pl_val, ph_val):
-    # ขนาดภายในของกล่อง Carton A10 คือ 592 x 404 mm
+    # ขนาดภายในจริงของกล่อง Carton A10 คือ 592 x 404 mm (L x W)
     carton_l, carton_w = 592, 404
     
     scale = 1.5
@@ -156,38 +156,42 @@ def draw_partition_svg(rule, pw_val, pl_val, ph_val):
     svg += f'<rect x="{margin_left}" y="{margin_top}" width="{carton_l * scale}" height="{carton_w * scale}" fill="#fef3c7" stroke="#b45309" stroke-width="4" rx="6" />'
     svg += f'<text x="{margin_left + (carton_l * scale)/2}" y="{margin_top - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#78350f" text-anchor="middle">CARTON A10 Internal: 592 x 404 mm</text>'
     
-    # 2. คำนวณพิกัดร่องฟันจริงจากแบบดรออิ้ง (Engineering Drawing Coordinates)
-    # พาร์ติชันตัวยาว (111x584): ร่องฟันที่แกน X
+    # 2. คำนวณพิกัดร่องฟันจริงตามดรออิ้ง (Engineering Drawing Coordinates)
+    # พาร์ติชันตัวยาว 111x584 (วางขนานแนวนอนแกน X): ร่องจริงที่แกน X
     long_part_len = 584
-    long_part_clearance = (carton_l - long_part_len) / 2 # 4 มม.
-    # ร่องจริง 5 จุด: 55.5, 173.75, 292.0, 410.25, 528.5 มม.
+    long_part_clearance = (carton_l - long_part_len) / 2  # 4 mm buffer on each end
+    # ร่องจริง 5 จุด (วัดตามจริงจาก PDF): 55.5, 173.75, 292.0, 410.25, 528.5 mm
     slots_x = [55.5, 173.75, 292.0, 410.25, 528.5]
     x_coords = [margin_left + (long_part_clearance + sx) * scale for sx in slots_x]
     
-    # พาร์ติชันตัวสั้น (111x393): ร่องฟันที่แกน Y
+    # พาร์ติชันตัวสั้น 111x393 (วางขนานแนวตั้งแกน Y): ร่องจริงที่แกน Y
     short_part_len = 393
-    short_part_clearance = (carton_w - short_part_len) / 2 # 5.5 มม.
-    # ร่องจริง 9 จุด: 40 + k * 39.125
+    short_part_clearance = (carton_w - short_part_len) / 2  # 5.5 mm buffer on each end
+    # ร่องจริง 9 จุด: 40 + k * 39.125 mm
     slots_y = [40 + (k * 39.125) for k in range(9)]
     y_coords = [margin_top + (short_part_clearance + sy) * scale for sy in slots_y]
     
-    # 3. วาดเส้นโครงสร้างแผ่นพาร์ติชันตัวสั้น (Short Partitions - Vertical Lines)
+    # พิกัดรวมทั้งหมดรวมขอบกล่องเพื่อคำนวณ Grid
+    all_x = [margin_left] + x_coords + [margin_left + carton_l * scale]
+    all_y = [margin_top] + y_coords + [margin_top + carton_w * scale]
+    
     p_type = rule.get("type", "standard_grid")
     
+    # 3. วาดเส้นแบ่งพาร์ติชันแนวตั้ง (Short Partitions running vertically at slots_x)
     active_x_indices = [0, 1, 2, 3, 4]
     if p_type == "merged_length":
-        active_x_indices = [0, 2, 4] # ลดการใส่แผ่นสั้นเพื่อขยายความยาวช่อง
+        active_x_indices = [0, 2, 4] # ถอดแผ่นสั้นแถว 2 และแถว 4 ออกเพื่อรวมช่อง
     elif p_type == "merged_max":
-        active_x_indices = [2] # ใช้แผ่นเดียวแบ่งตรงกลาง
+        active_x_indices = [2] # ใช้แผ่นเดียวแบ่งครึ่ง
 
     for idx in active_x_indices:
         cx = x_coords[idx]
         svg += f'<line x1="{cx}" y1="{margin_top}" x2="{cx}" y2="{margin_top + carton_w * scale}" stroke="#334155" stroke-width="4" stroke-dasharray="6,4" />'
 
-    # 4. วาดเส้นโครงสร้างแผ่นพาร์ติชันตัวยาว (Long Partitions - Horizontal Lines)
+    # 4. วาดเส้นแบ่งพาร์ติชันแนวนอน (Long Partitions running horizontally at slots_y)
     active_y_indices = list(range(9))
     if p_type == "merged_both":
-        active_y_indices = [1, 3, 5, 7]
+        active_y_indices = [1, 3, 5, 7] # ถอดสลับร่อง
     elif p_type == "merged_max":
         active_y_indices = [2, 6]
 
@@ -195,27 +199,34 @@ def draw_partition_svg(rule, pw_val, pl_val, ph_val):
         cy = y_coords[idx]
         svg += f'<line x1="{margin_left}" y1="{cy}" x2="{margin_left + carton_l * scale}" y2="{cy}" stroke="#334155" stroke-width="4" stroke-dasharray="6,4" />'
 
-    # 5. วาดผลิตภัณฑ์พร้อมระบุมิติลงในช่องสล็อตพาร์ติชันจริง
-    all_x = [margin_left] + x_coords + [margin_left + carton_l * scale]
-    all_y = [margin_top] + y_coords + [margin_top + carton_w * scale]
-    
+    # 5. วาดและคำนวณ Layout สล็อตผลิตภัณฑ์ (Product Placements inside active cells)
+    # หาพิกัดมุมของแต่ละช่องของตาราง 6 คอลัมน์ x 10 แถว
     for i in range(1, len(all_x)):
         for j in range(1, len(all_y)):
+            # คำนวณขนาดย่อยของ Cell จริง
             cell_w = (all_x[i] - all_x[i-1]) / scale
             cell_h = (all_y[j] - all_y[j-1]) / scale
             
-            # ชิ้นงานจัดวางเฉพาะในสล็อตใช้งาน (ไม่รวมช่อง Buffer ขอบกล่อง)
-            is_inner_x = i in [2, 3, 4, 5]
-            is_inner_y = j in [2, 3, 4, 5, 6, 7, 8, 9]
+            # กรองสล็อตเพื่อวางสินค้าในช่องใช้งานที่ถูกต้องตามดรออิ้งพาร์ติชัน
+            is_inner_x = False
+            is_inner_y = False
             
-            if p_type == "merged_length":
+            if p_type == "standard_grid":
+                # 8x4 Grid จะใช้พื้นที่ร่องย่อยด้านใน (ไม่รวมช่องขอบบกกล่องเพื่อป้องกันความเสียหาย)
+                is_inner_x = i in [2, 3, 4, 5]
+                is_inner_y = j in [2, 3, 4, 5, 6, 7, 8, 9]
+            elif p_type == "merged_length":
                 is_inner_x = i in [2, 3, 4]
+                is_inner_y = j in [2, 3, 4, 5, 6, 7, 8, 9]
+            elif p_type == "merged_both":
+                is_inner_x = i in [2, 3, 4]
+                is_inner_y = j in [2, 4, 6, 8]
             elif p_type == "merged_max":
                 is_inner_x = i == 2
-                is_inner_y = j in [2, 3, 4, 5]
-                
+                is_inner_y = j in [2, 4, 6, 8]
+
             if is_inner_x and is_inner_y:
-                # วาดกล่องสินค้าสีส้ม (พิกัดและขนาดจะย่อจากขอบสล็อตเล็กน้อยเพื่อให้เห็นพื้นที่ช่องไฟ)
+                # วาดกล่องผลิตภัณฑ์ (สีส้มพาสเทลขอบส้มเข้ม บ่งบอกถึงผลิตภัณฑ์และ ESD bag)
                 rect_x = all_x[i-1] + 4 * scale
                 rect_y = all_y[j-1] + 4 * scale
                 rect_w = (all_x[i] - all_x[i-1]) - 8 * scale
@@ -223,15 +234,15 @@ def draw_partition_svg(rule, pw_val, pl_val, ph_val):
                 
                 svg += f'<rect x="{rect_x}" y="{rect_y}" width="{rect_w}" height="{rect_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="3" />'
                 
+                # แสดงข้อความระบุมิติผลิตภัณฑ์ (กว้าง x ยาว x สูง)
                 text_x = all_x[i-1] + (all_x[i] - all_x[i-1])/2
                 text_y = all_y[j-1] + (all_y[j] - all_y[j-1])/2
                 
-                # แสดงขนาดสินค้าในสล็อตให้เหมาะสมกับสเกลความกว้าง
-                if rect_w > 40 * scale:
-                    svg += f'<text x="{text_x}" y="{text_y - 2*scale}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#9a3412" text-anchor="middle">Product</text>'
-                    svg += f'<text x="{text_x}" y="{text_y + 10*scale}" font-family="system-ui, sans-serif" font-size="9" fill="#c2410c" text-anchor="middle">{int(pw_val)}x{int(pl_val)}x{int(ph_val)}</text>'
+                if rect_w > 45 * scale:
+                    svg += f'<text x="{text_x}" y="{text_y - 3*scale}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#9a3412" text-anchor="middle">Product</text>'
+                    svg += f'<text x="{text_x}" y="{text_y + 9*scale}" font-family="system-ui, sans-serif" font-size="9" fill="#c2410c" text-anchor="middle">{int(pw_val)}x{int(pl_val)}x{int(ph_val)}</text>'
                 else:
-                    svg += f'<text x="{text_x}" y="{text_y + 3*scale}" font-family="system-ui, sans-serif" font-size="7" font-weight="bold" fill="#9a3412" text-anchor="middle">{int(pw_val)}x{int(pl_val)}</text>'
+                    svg += f'<text x="{text_x}" y="{text_y + 3*scale}" font-family="system-ui, sans-serif" font-size="7.5" font-weight="bold" fill="#9a3412" text-anchor="middle">{int(pw_val)}x{int(pl_val)}</text>'
                     
     svg += '</svg>'
     return svg
