@@ -18,9 +18,11 @@ CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-# พิกัดแนวร่องขัดจริง (Center-to-Center) วัดตามดรออิ้ง PDF
-GROOVE_X_ALL = [59.5, 177.75, 296.0, 414.25, 532.5]
-GROOVE_Y_ALL = [45.5, 84.625, 123.75, 162.875, 202.0, 241.125, 280.25, 319.375, 358.5]
+# พิกัดแนวร่องขัดจริง (Center-to-Center) วัดตามดรออิ้ง PDF ที่ปรับแก้อย่างถูกต้องตามระยะขอบ x=9.5 mm และ y=14.0 mm
+# แผ่นยาว 584 mm: วางในกล่องยาว 592 mm (gap ข้างละ 4.0 mm) -> ร่องเริ่มที่ 4.0 + 9.5 = 13.5 mm | พิตช์ (584-19)/4 = 141.25 mm
+GROOVE_X_ALL = [13.5, 154.75, 296.0, 437.25, 578.5]
+# แผ่นสั้น 393 mm: วางในกล่องกว้าง 404 mm (gap ข้างละ 5.5 mm) -> ร่องเริ่มที่ 5.5 + 14.0 = 19.5 mm | พิตช์ (393-28)/8 = 45.625 mm
+GROOVE_Y_ALL = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
@@ -58,8 +60,8 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
     subsets_y = []
     y_presets = [
         GROOVE_Y_ALL, # ใส่ทั้งหมด
-        [45.5, 123.75, 202.0, 280.25, 358.5], # เว้นหนึ่งช่อง
-        [45.5, 202.0, 358.5], # เว้นสองช่อง
+        [19.5, 110.75, 202.0, 293.25, 384.5], # เว้นหนึ่งช่อง
+        [19.5, 202.0, 384.5], # เว้นสองช่อง
     ]
     for r in [2, 3, 4, 5, 9]:
         for comb in itertools.combinations(GROOVE_Y_ALL, min(r, len(GROOVE_Y_ALL))):
@@ -172,7 +174,7 @@ def draw_asymmetric_svg(opt):
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
     for sy in GROOVE_Y_ALL:
         cy = pad_y + (sy * scale)
-        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+        svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 584.0)*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
     # 3. วาดแผ่นพาร์ติชันแนวตั้งที่ถูกเลือกใช้งานจริง (Active X Dividers) - เส้นแดงหนาแข็งแรง
     for vx in ax:
