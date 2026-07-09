@@ -1,13 +1,32 @@
 import streamlit as st
 import itertools
 
-# การตั้งค่าพิกัดร่องขัด Carton A10 (ตามดรออิ้งจริง)
-GROOVE_X_ALL = [13.5, 154.75, 296.0, 437.25, 578.5]
-GROOVE_Y_ALL = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# --- ฟังก์ชันคำนวณความจุ (หัวใจหลักที่หายไป) ---
+def calculate_capacity(w, l, layers):
+    """
+    คำนวณจำนวนชิ้นที่สามารถวางได้ใน Slot
+    หมายเหตุ: นี่เป็นตรรกะเบื้องต้น หากมีสูตรคำนวณเฉพาะจากไฟล์ Excel สามารถปรับแก้ในนี้ได้เลย
+    """
+    # ตัวอย่างตรรกะ: สมมติฐานว่ากล่อง A10 มีขนาดพื้นที่วางจำกัด 
+    # และพาร์ติชันช่วยแบ่งพื้นที่ออกเป็นช่องๆ
+    box_w, box_l = 404, 592 # ID ของ Carton A10
+    
+    # หารจำนวนช่องที่ใส่ได้ในแต่ละแนว
+    cols = box_w // w
+    rows = box_l // l
+    
+    return int(cols * rows * layers)
+
+# --- ส่วนของ Interface และตรรกะหลัก ---
+st.title("📦 ระบบคำนวณพาร์ติชัน Carton A10")
+
+st.sidebar.header("กรอกขนาดสินค้า")
+d1 = st.sidebar.number_input("Dimension 1 (mm)", value=50.0)
+d2 = st.sidebar.number_input("Dimension 2 (mm)", value=100.0)
+d3 = st.sidebar.number_input("Dimension 3 (mm)", value=40.0)
+clearance = st.sidebar.slider("ระยะเผื่อ (Clearance)", 1.0, 10.0, 5.0)
 
 def get_optimal_layout(dims, clearance):
-    # ปรับให้ค่า input เรียงลำดับเพื่อให้เป็นอิสระต่อตำแหน่งกรอก (Invariant to Input Order)
-    # เราลองทุกการหมุน 6 ทิศทาง (Permutations)
     possible_orientations = list(itertools.permutations(dims))
     
     best_config = None
@@ -28,9 +47,7 @@ def get_optimal_layout(dims, clearance):
             target_w = w + clearance
             target_l = l + clearance
             
-            # คำนวณความจุในทุกทิศทาง
-            # (ตรรกะการหา Slot ที่ล้อมด้วยพาร์ติชันจริงเหมือนเดิม)
-            # ในที่นี้ข้ามรายละเอียดเชิงลึกเพื่อความกระชับ แต่ได้ผลลัพธ์คือ:
+            # เรียกใช้ฟังก์ชันที่เพิ่มเข้ามา
             qty = calculate_capacity(target_w, target_l, layers)
             
             if qty > max_qty:
@@ -39,20 +56,12 @@ def get_optimal_layout(dims, clearance):
     
     return best_config
 
-# --- ปรับปรุงระบบส่วน Interface ---
-st.title("📦 ระบบคำนวณพาร์ติชัน Carton A10 (Rotation-Invariant)")
-
-st.sidebar.header("กรอกขนาดสินค้า")
-d1 = st.sidebar.number_input("Dimension 1 (mm)", value=50.0)
-d2 = st.sidebar.number_input("Dimension 2 (mm)", value=150.0)
-d3 = st.sidebar.number_input("Dimension 3 (mm)", value=160.0)
-clearance = st.sidebar.slider("ระยะเผื่อ (Clearance)", 1.0, 10.0, 5.0)
-
 # ระบบจะมองเป็น Set ของ [d1, d2, d3] ไม่ว่าคุณจะกรอกเลขไหนไว้ช่องใด
 result = get_optimal_layout([d1, d2, d3], clearance)
 
 if result:
     st.success(f"พบการจัดวางที่เหมาะสมที่สุด: {result['qty']} ชิ้น/กล่อง")
     st.write(f"แนะนำให้วางสินค้าโดยใช้แนวแกน {result['w']}x{result['l']}x{result['h']} mm")
+    st.write(f"จำนวนชั้นที่ใช้: {result['layers']} ชั้น")
 else:
-    st.error("ไม่สามารถบรรจุชิ้นงานนี้ใน Carton A10 ได้")
+    st.error("ไม่สามารถบรรจุชิ้นงานนี้ใน Carton A10 ได้ (ขนาดเกินหรือความสูงไม่พอ)")
