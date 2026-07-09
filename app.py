@@ -1,67 +1,55 @@
 import streamlit as st
+import pandas as pd
 import itertools
 
-# --- ฟังก์ชันคำนวณความจุ (หัวใจหลักที่หายไป) ---
-def calculate_capacity(w, l, layers):
-    """
-    คำนวณจำนวนชิ้นที่สามารถวางได้ใน Slot
-    หมายเหตุ: นี่เป็นตรรกะเบื้องต้น หากมีสูตรคำนวณเฉพาะจากไฟล์ Excel สามารถปรับแก้ในนี้ได้เลย
-    """
-    # ตัวอย่างตรรกะ: สมมติฐานว่ากล่อง A10 มีขนาดพื้นที่วางจำกัด 
-    # และพาร์ติชันช่วยแบ่งพื้นที่ออกเป็นช่องๆ
-    box_w, box_l = 404, 592 # ID ของ Carton A10
+# --- 1. โหลดข้อมูลจากไฟล์ CSV ---
+@st.cache_data
+def load_data():
+    # โหลดไฟล์ข้อมูลที่มีอยู่
+    df = pd.read_csv("MasterCarton A10 vs partition 20260708.xlsx - Partition with A10.csv")
+    return df
+
+df = load_data()
+
+# --- 2. ฟังก์ชันค้นหาคำตอบจากตาราง (แทนที่การคำนวณสด) ---
+def find_packing_from_data(dims, clearance):
+    # ปรับจูนสินค้าให้เป็นช่วง (Min, Max) ตามตาราง
+    w, l, h = sorted(dims)
     
-    # หารจำนวนช่องที่ใส่ได้ในแต่ละแนว
-    cols = box_w // w
-    rows = box_l // l
+    # กรองข้อมูลจาก DataFrame
+    # โดยเช็คว่าขนาดสินค้าอยู่ในช่วงที่ตารางกำหนด
+    matches = df[
+        (df['Min.1'] <= w) & (df['MAX.1'] >= w) &
+        (df['Min.2'] <= l) & (df['MAX.2'] >= l) &
+        (df['Min.3'] <= h) & (df['MAX.3'] >= h)
+    ]
     
-    return int(cols * rows * layers)
+    if not matches.empty:
+        # คืนค่าบรรทัดแรกที่พบ
+        return matches.iloc[0]
+    return None
 
-# --- ส่วนของ Interface และตรรกะหลัก ---
-st.title("📦 ระบบคำนวณพาร์ติชัน Carton A10")
+# --- 3. ส่วนของ Interface ---
+st.title("📦 ระบบคำนวณพาร์ติชัน Carton A10 (Data-Driven)")
 
-st.sidebar.header("กรอกขนาดสินค้า")
-d1 = st.sidebar.number_input("Dimension 1 (mm)", value=50.0)
-d2 = st.sidebar.number_input("Dimension 2 (mm)", value=100.0)
-d3 = st.sidebar.number_input("Dimension 3 (mm)", value=40.0)
-clearance = st.sidebar.slider("ระยะเผื่อ (Clearance)", 1.0, 10.0, 5.0)
+st.sidebar.header("กรอกขนาดสินค้า (mm)")
+d1 = st.sidebar.number_input("Dimension 1", value=50.0)
+d2 = st.sidebar.number_input("Dimension 2", value=100.0)
+d3 = st.sidebar.number_input("Dimension 3", value=40.0)
 
-def get_optimal_layout(dims, clearance):
-    possible_orientations = list(itertools.permutations(dims))
+# ค้นหาข้อมูล
+result = find_packing_from_data([d1, d2, d3], 0)
+
+if result is not None:
+    st.success("พบข้อมูลการจัดวางที่เหมาะสมจากฐานข้อมูล!")
+    st.subheader("คำแนะนำการบรรจุ:")
+    st.info(result['Box Style\nsuggstion']) # แสดงค่าจากคอลัมน์ Box Style suggstion
     
-    best_config = None
-    max_qty = -1
-
-    for orient in possible_orientations:
-        w, l, h = orient
-        
-        # เช็คขีดจำกัดความสูงกล่อง Carton A10 (255mm)
-        if h + clearance > 255: continue
-        
-        # เลือกระดับความสูงพาร์ติชัน (111 หรือ 225)
-        layer_opts = []
-        if h + clearance <= 111: layer_opts.append((111, 2))
-        if h + clearance <= 225: layer_opts.append((225, 1))
-        
-        for part_h, layers in layer_opts:
-            target_w = w + clearance
-            target_l = l + clearance
-            
-            # เรียกใช้ฟังก์ชันที่เพิ่มเข้ามา
-            qty = calculate_capacity(target_w, target_l, layers)
-            
-            if qty > max_qty:
-                max_qty = qty
-                best_config = {"w": w, "l": l, "h": h, "layers": layers, "qty": qty}
-    
-    return best_config
-
-# ระบบจะมองเป็น Set ของ [d1, d2, d3] ไม่ว่าคุณจะกรอกเลขไหนไว้ช่องใด
-result = get_optimal_layout([d1, d2, d3], clearance)
-
-if result:
-    st.success(f"พบการจัดวางที่เหมาะสมที่สุด: {result['qty']} ชิ้น/กล่อง")
-    st.write(f"แนะนำให้วางสินค้าโดยใช้แนวแกน {result['w']}x{result['l']}x{result['h']} mm")
-    st.write(f"จำนวนชั้นที่ใช้: {result['layers']} ชั้น")
+    with st.expander("ดูรายละเอียดข้อมูลดิบที่พบ"):
+        st.write(result)
 else:
-    st.error("ไม่สามารถบรรจุชิ้นงานนี้ใน Carton A10 ได้ (ขนาดเกินหรือความสูงไม่พอ)")
+    st.warning("ไม่พบรูปแบบการบรรจุที่ตรงกับขนาดนี้ในฐานข้อมูล")
+    
+# แสดงตารางให้เห็นว่าระบบกำลังอ่านไฟล์
+with st.expander("ดูตารางข้อมูลทั้งหมด"):
+    st.dataframe(df)
