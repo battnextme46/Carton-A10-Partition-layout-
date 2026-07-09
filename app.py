@@ -35,18 +35,22 @@ clearance = st.sidebar.slider("ระยะเผื่อช่อง/ควา
 
 # --- DYNAMIC SOLVER ENGINE ---
 def find_asymmetric_optimal_layout(pw, pl, ph):
-    # ค้นหาทางเลือกการหมุน 3 มิติเต็มรูปแบบ (6-Way 3D Orientations)
-    # เก็บสถานะ 'is_fixed_h' ไว้เช็คเมื่อแนวความสูง (vert_h) เท่ากับค่าความสูงต้นทาง (ph) ที่กรอก
-    orientations_3d = [
-        {"flat_w": pw, "flat_l": pl, "vert_h": ph, "label": "W x L x H (ปกติ)", "is_fixed_h": True},
-        {"flat_w": pl, "flat_l": pw, "vert_h": ph, "label": "L x W x H", "is_fixed_h": True},
-        
-        {"flat_w": pw, "flat_l": ph, "vert_h": pl, "label": "W x H x L", "is_fixed_h": False},
-        {"flat_w": ph, "flat_l": pw, "vert_h": pl, "label": "H x W x L", "is_fixed_h": False},
-        
-        {"flat_w": pl, "flat_l": ph, "vert_h": pw, "label": "L x H x W", "is_fixed_h": False},
-        {"flat_w": ph, "flat_l": pl, "vert_h": pw, "label": "H x L x W", "is_fixed_h": False}
-    ]
+    # ป้องกัน Bug ความไม่เท่ากันของข้อมูลอินพุต โดยนำมิติทั้งหมดมาทำ 3D 6-Way Permutations แบบสากล
+    all_dims = [pw, pl, ph]
+    unique_orientations = set(itertools.permutations(all_dims))
+    
+    orientations_3d = []
+    for perm in unique_orientations:
+        w_rot, l_rot, h_rot = perm
+        # กำหนดสถานะ 'is_fixed_h' ให้เป็น True เมื่อแนวความสูงที่หมุน (h_rot) เท่ากับค่าความสูง (ph) ที่กรอกมาแต่แรก
+        is_fixed_h = (h_rot == ph)
+        orientations_3d.append({
+            "flat_w": w_rot,
+            "flat_l": l_rot,
+            "vert_h": h_rot,
+            "label": f"{int(w_rot)} x {int(l_rot)} x {int(h_rot)}",
+            "is_fixed_h": is_fixed_h
+        })
 
     best_options = []
 
@@ -56,18 +60,18 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
         for comb in itertools.combinations(GROOVE_X_ALL, r):
             subsets_x.append(sorted(list(comb)))
 
-    # เจนเนอเรต Subset ของแนวนอน Y (ต้องมีอย่างน้อย 2 แผ่นเพื่อกั้นช่องกลางที่สมบูรณ์)
+    # เจนเนอเรต Subset ของแนวนอน Y ปลดล็อกประมวลผลครอบคลุมร่อง 2 ถึง 9 ครบทุกมิติ (แก้ปัญหาสล็อตหลุด)
     subsets_y = []
-    y_presets = [
-        GROOVE_Y_ALL, # ใส่ทั้งหมด
-        [19.5, 110.75, 202.0, 293.25, 384.5], # เว้นหนึ่งช่อง
-        [19.5, 202.0, 384.5], # เว้นสองช่อง
-    ]
-    for r in [2, 3, 4, 5, 9]:
-        for comb in itertools.combinations(GROOVE_Y_ALL, min(r, len(GROOVE_Y_ALL))):
+    for r in range(2, len(GROOVE_Y_ALL) + 1):
+        for comb in itertools.combinations(GROOVE_Y_ALL, r):
             subsets_y.append(sorted(list(comb)))
             
     unique_subsets_y = []
+    y_presets = [
+        GROOVE_Y_ALL, 
+        [19.5, 110.75, 202.0, 293.25, 384.5], 
+        [19.5, 202.0, 384.5], 
+    ]
     for s in y_presets + subsets_y:
         s_sorted = sorted(s)
         if s_sorted not in unique_subsets_y and len(s_sorted) >= 2:
@@ -304,7 +308,7 @@ if options:
                 <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
                 <p style="color: #166534; font-size: 15px; line-height: 1.6;">
                     ระบบวิเคราะห์ 3D 6-Way Rotation Engine ได้ทำการจำลองการหมุนชิ้นงานในทุกระนาบและองศาความหนาพาร์ติชันแล้ว 
-                    พบว่า<b>ทิศทางที่ป้อนค่าเริ่มต้น (ความสูง {int(p_h)} mm บนแกนตั้ง) ให้กำลังความจุที่ {best_fixed['qty_box'] if best_fixed else 0} ชิ้นต่อกล่อง ซึ่งสูงที่สุดแล้ว</b> 
+                    พบว่า<b>ทิศทางที่ป้อนค่าเริ่มต้น ให้กำลังความจุรวมต่อกล่องสูงที่สุดแล้ว</b> 
                     ไม่มีรูปแบบการหมุนแนวราบหรือแนวนอนแบบอื่นที่สร้างความจุได้สูงกว่าเคสปกติในปัจจุบันครับ
                 </p>
             </div>
