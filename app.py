@@ -34,16 +34,16 @@ clearance = st.sidebar.slider("ระยะเผื่อช่อง/ควา
 # --- DYNAMIC SOLVER ENGINE ---
 def find_asymmetric_optimal_layout(pw, pl, ph):
     # ค้นหาทางเลือกการหมุน 3 มิติเต็มรูปแบบ (6-Way 3D Orientations)
-    # ไม่ว่าจะกรอกความกว้าง ความยาว หรือความหนามาในทิศทางใด ระบบจะทดลองให้ทุกด้านสามารถเป็นแนวตั้ง (Z-Axis) ได้
+    # เก็บสถานะ 'is_fixed_h' ไว้เช็คเมื่อแนวความสูง (vert_h) เท่ากับค่าความสูงต้นทาง (ph) ที่กรอก
     orientations_3d = [
-        {"flat_w": pw, "flat_l": pl, "vert_h": ph, "label": "W x L x H (ปกติ)"},
-        {"flat_w": pl, "flat_l": pw, "vert_h": ph, "label": "L x W x H"},
+        {"flat_w": pw, "flat_l": pl, "vert_h": ph, "label": "W x L x H (ปกติ)", "is_fixed_h": True},
+        {"flat_w": pl, "flat_l": pw, "vert_h": ph, "label": "L x W x H", "is_fixed_h": True},
         
-        {"flat_w": pw, "flat_l": ph, "vert_h": pl, "label": "W x H x L"},
-        {"flat_w": ph, "flat_l": pw, "vert_h": pl, "label": "H x W x L"},
+        {"flat_w": pw, "flat_l": ph, "vert_h": pl, "label": "W x H x L", "is_fixed_h": False},
+        {"flat_w": ph, "flat_l": pw, "vert_h": pl, "label": "H x W x L", "is_fixed_h": False},
         
-        {"flat_w": pl, "flat_l": ph, "vert_h": pw, "label": "L x H x W"},
-        {"flat_w": ph, "flat_l": pl, "vert_h": pw, "label": "H x L x W"}
+        {"flat_w": pl, "flat_l": ph, "vert_h": pw, "label": "L x H x W", "is_fixed_h": False},
+        {"flat_w": ph, "flat_l": pl, "vert_h": pw, "label": "H x L x W", "is_fixed_h": False}
     ]
 
     best_options = []
@@ -134,14 +134,11 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
                         "p_w_disp": ew,
                         "p_l_disp": el,
                         "p_h_disp": eh,
-                        "total_dividers": len(ax) + len(ay)
+                        "total_dividers": len(ax) + len(ay),
+                        "is_fixed_h": orient["is_fixed_h"]
                     })
 
-    # เรียงลำดับตัวเลือก: เอาตัวที่จุได้มากที่สุดก่อน และใช้จำนวนแผ่นกระดาษน้อยกว่าเมื่อจำนวนชิ้นเท่ากัน
-    if best_options:
-        best_options.sort(key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
-        return best_options
-    return []
+    return best_options
 
 options = find_asymmetric_optimal_layout(p_w, p_l, p_h)
 
@@ -205,60 +202,134 @@ def draw_asymmetric_svg(opt):
         # วาดบ๊อกซ์ผลิตภัณฑ์ PCBA (สีส้ม ESD พาสเทล)
         svg += f'<rect x="{rect_x}" y="{rect_y}" width="{draw_w}" height="{draw_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="4" />'
         
-        # แสดงข้อความระบุข้อมูลชิ้นงาน
+        # แสดงข้อความระบุข้อมูลชิ้นงานและทิศทางการวางจริงในแกนระนาบ
         svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
-        svg += f'<text x="{mid_x}" y="{mid_y + 11}" font-family="system-ui, sans-serif" font-size="9.5" fill="#ea580c" text-anchor="middle">{int(p_w)}x{int(p_l)}x{int(p_h)}</text>'
+        svg += f'<text x="{mid_x}" y="{mid_y + 11}" font-family="system-ui, sans-serif" font-size="9.5" fill="#ea580c" text-anchor="middle">{int(opt["p_w_disp"])}x{int(opt["p_l_disp"])}x{int(opt["p_h_disp"])}</text>'
             
     svg += '</svg>'
     return svg
 
+def render_packing_list(opt):
+    active_x_qty = len(opt["ax"])
+    active_y_qty = len(opt["ay"])
+    layers_count = opt["layers"]
+    paper_pads = layers_count + 1
+    
+    # รายการ BOM รายบุคคลของทิศทางนั้นๆ
+    bom_items = [
+        {"name": "กล่องกระดาษภายนอก (Master Carton A10)", "qty": "1 Pcs", "spec": "OD: 602x414x270 mm | ID: 592x404x255 mm"},
+        {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น (ดึงออก {5 - active_x_qty} แผ่น)"},
+        {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น (ดึงออก {9 - active_y_qty} แผ่น)"},
+        {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
+        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
+    ]
+    
+    for item in bom_items:
+        st.markdown(f"""
+        <div style="background-color: #f8fafc; border-left: 6px solid #1e293b; padding: 10px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div style="font-weight: bold; font-size: 14px; color: #0f172a;">{item['name']}</div>
+                    <div style="font-size: 11px; color: #64748b;">{item['spec']}</div>
+                </div>
+                <span style="background-color: #1e293b; color: white; padding: 3px 10px; border-radius: 12px; font-weight: bold; font-size: 12px;">{item['qty']}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
 # --- MAIN RENDER ---
 if options:
-    best_opt = options[0]
+    # แยกแยะกลุ่มข้อมูล
+    fixed_h_options = [o for o in options if o["is_fixed_h"]]
+    fixed_h_options.sort(key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
     
-    col1, col2 = st.columns([1, 1.3])
+    overall_options = sorted(options, key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
     
+    best_fixed = fixed_h_options[0] if fixed_h_options else None
+    best_overall = overall_options[0] if overall_options else None
+    
+    # เงื่อนไขการโชว์แบบที่ 2 (กรณีมี 3D Orientation อื่นที่ได้จำนวนชิ้นมากกว่า Fixed H เดิม)
+    has_better_alternative = best_overall and best_fixed and (best_overall["qty_box"] > best_fixed["qty_box"])
+
+    # สร้างแผง Layout 2 คอลัมน์เคียงข้างกัน
+    col1, col2 = st.columns(2)
+    
+    # --- คอลัมน์ซ้าย: FIX H ตามที่กรอก ---
     with col1:
-        st.subheader("📋 1. รายละเอียดวัสดุบรรจุภัณฑ์ (Packing List)")
-        st.success(f"🔥 **วิเคราะห์รูปแบบกริดที่ดีที่สุดแบบอสมมาตร:** {best_opt['qty_layer']} ช่อง/ชั้น")
-        st.info(f"💡 **ทิศทางการจัดวางชิ้นงาน:** {best_opt['orient_label']}")
-        
-        active_x_qty = len(best_opt["ax"])
-        active_y_qty = len(best_opt["ay"])
-        layers_count = best_opt["layers"]
-        paper_pads = layers_count + 1
-        
-        # ใบรายการชิ้นส่วนวัสดุแพ็คเกจจิ้ง (BOM)
-        bom_items = [
-            {"name": "กล่องกระดาษภายนอก (Master Carton A10)", "qty": "1 Pcs", "spec": "OD: 602x414x270 mm | ID: 592x404x255 mm"},
-            {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if best_opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น (ดึงออก {5 - active_x_qty} แผ่น)"},
-            {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if best_opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น (ดึงออก {9 - active_y_qty} แผ่น)"},
-            {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
-            {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{best_opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
-        ]
-        
-        for item in bom_items:
+        st.header("1️⃣ Fixed H Layout (ล็อกความสูงตามที่กรอก)")
+        if best_fixed:
+            st.success(f"📌 **ทิศทางการจัดวาง:** {best_fixed['orient_label']}")
+            
+            # สรุปเมทริกซ์การจัดวางของ Fixed H
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("จำนวนสินค้า/ชั้น", f"{best_fixed['qty_layer']} Pcs")
+            m_col2.metric("จำนวนชั้น (Layers)", f"{best_fixed['layers']} ชั้น")
+            m_col3.metric("ความจุรวม/กล่อง", f"{best_fixed['qty_box']} Pcs/Box")
+            
+            # บล็อกรายการ BOM เฉพาะของ Fixed H
+            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
+            render_packing_list(best_fixed)
+            
+            # วาดแผนผัง SVG ของ Fixed H
+            st.subheader("📐 แผนผังการจัดวางจริง (Fixed H Blueprint)")
+            st.write(draw_asymmetric_svg(best_fixed), unsafe_allow_html=True)
+        else:
+            st.error("❌ ไม่พบรูปแบบพาร์ติชันสำหรับความสูง (H) นี้ได้จริง กรุณาตรวจสอบขนาดและลองอีกครั้ง")
+
+    # --- คอลัมน์ขวา: Alternative Option (หมุน 3 มิติเชิงลึกที่ดีกว่า) ---
+    with col2:
+        st.header("2️⃣ Alternative Option (ทิศทางที่ดีกว่า/ทางเลือก)")
+        if has_better_alternative:
+            st.warning(f"🔥 **แนะนำเปลี่ยนทิศทางการวางเป็น:** {best_overall['orient_label']}")
+            
+            # สรุปเมทริกซ์การจัดวางของ Best Overall
+            a_col1, a_col2, a_col3 = st.columns(3)
+            a_col1.metric("จำนวนสินค้า/ชั้น", f"{best_overall['qty_layer']} Pcs", f"+{best_overall['qty_layer'] - best_fixed['qty_layer']} Pcs")
+            a_col2.metric("จำนวนชั้น (Layers)", f"{best_overall['layers']} ชั้น")
+            a_col3.metric("ความจุรวม/กล่อง", f"{best_overall['qty_box']} Pcs/Box", f"+{best_overall['qty_box'] - best_fixed['qty_box']} Pcs")
+            
+            # บล็อกรายการ BOM เฉพาะของ Best Overall
+            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
+            render_packing_list(best_overall)
+            
+            # วาดแผนผัง SVG ของ Best Overall
+            st.subheader("📐 แผนผังการจัดวางจริง (Alternative Blueprint)")
+            st.write(draw_asymmetric_svg(best_overall), unsafe_allow_html=True)
+        else:
+            st.info("💡 **การประเมินวิศวกรรมเชิงลึก:**")
             st.markdown(f"""
-            <div style="background-color: #f8fafc; border-left: 6px solid #1e293b; padding: 12px; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-weight: bold; font-size: 16px; color: #0f172a;">{item['name']}</div>
-                        <div style="font-size: 13px; color: #64748b;">{item['spec']}</div>
-                    </div>
-                    <span style="background-color: #1e293b; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 14px;">{item['qty']}</span>
-                </div>
+            <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 20px; border-radius: 12px; margin-top: 10px;">
+                <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
+                <p style="color: #166534; font-size: 15px; line-height: 1.6;">
+                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine ได้ทำการจำลองการหมุนชิ้นงานในทุกระนาบและองศาความหนาพาร์ติชันแล้ว 
+                    พบว่า<b>ทิศทางที่ป้อนค่าเริ่มต้น (ความสูง {int(p_h)} mm บนแกนตั้ง) ให้กำลังความจุที่ {best_fixed['qty_box'] if best_fixed else 0} ชิ้นต่อกล่อง ซึ่งสูงที่สุดแล้ว</b> 
+                    ไม่มีรูปแบบการหมุนแนวราบหรือแนวนอนแบบอื่นที่สร้างความจุได้สูงกว่าเคสปกติในปัจจุบันครับ
+                </p>
             </div>
             """, unsafe_allow_html=True)
             
-        m1, m2, m3 = st.columns(3)
-        m1.metric("จำนวนสินค้า / ชั้น", f"{best_opt['qty_layer']} Pcs")
-        m2.metric("จำนวนชั้น (Layers)", f"{best_opt['layers']} ชั้น")
-        m3.metric("ความจุรวม/กล่อง (Qty/Box)", f"{best_opt['qty_box']} Pcs")
+            if best_fixed:
+                st.subheader("📊 รายละเอียดสรุปโครงสร้างปัจจุบัน")
+                st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
+                st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
 
-    with col2:
-        st.subheader("📐 2. แผนผังการจัดวางจริง (Real Groove Partition Blueprint)")
-        st.write(draw_asymmetric_svg(best_opt), unsafe_allow_html=True)
-        st.caption("หมายเหตุ: เส้นประสีเทาเข้มแสดงพิกัดร่องฟันจริงจากดรออิ้งพาร์ติชัน 111x584 และ 111x393 สำหรับวางแผนการทำงานร่วมกับผู้ผลิต")
+    # แสดงรายการตารางเปรียบเทียบ Grid Layout ทั้งหมดด้านล่าง
+    st.write("---")
+    st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดและทิศทางการจัดวางที่เป็นไปได้ทั้งหมด (All Feasible Configuration Summary)")
+    
+    summary_table = []
+    for idx, opt in enumerate(overall_options[:10]): # แสดง Top 10 ทางเลือกเพื่อความสะอาดของตาราง
+        summary_table.append({
+            "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
+            "ทิศทางจัดวาง": opt["orient_label"],
+            "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
+            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
+            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
+            "ความจุต่อชั้น (Layer Qty)": f"{opt['qty_layer']} Pcs",
+            "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
+            "ความจุรวมกล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
+        })
+    st.dataframe(summary_table, use_container_width=True)
 
 else:
-    st.error("❌ ไม่พบขนาดกล่องพาร์ติชันที่เหมาะสมกับขนาดผลิตภัณฑ์ที่ระบุ กรุณาตรวจสอบขนาดและลองอีกครั้ง")
+    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่สามารถบรรจุผลิตภัณฑ์ขนาดนี้ลงในกล่อง Carton A10 ได้จริง กรุณาปรับระยะ Clearance หรือตรวจสอบขนาดผลิตภัณฑ์อีกครั้ง")
