@@ -24,33 +24,26 @@ GROOVE_Y_ALL = [45.5, 84.625, 123.75, 162.875, 202.0, 241.125, 280.25, 319.375, 
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=30.0, step=1.0)
-p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=250.0, step=1.0)
-p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=120.0, step=1.0)
+p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=25.0, step=1.0)
+p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=200.0, step=1.0)
+p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=160.0, step=1.0)
 
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
 clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 5.0, step=0.5)
 
 # --- DYNAMIC SOLVER ENGINE ---
 def find_asymmetric_optimal_layout(pw, pl, ph):
-    # 1. เช็คความสูงเพื่อคำนวณจำนวนชั้น (Layers)
-    if ph + clearance <= 111.0:
-        part_height = 111.0
-        layers = 2
-    elif ph + clearance <= 225.0:
-        part_height = 225.0
-        layers = 1
-    else:
-        return []
-
-    # ขนาดที่ต้องการสำหรับหนึ่งช่องสล็อตใช้งานจริง
-    req_w = pw + clearance
-    req_l = pl + clearance
-
-    # ค้นหาทางเลือกการหมุนแนวราบสลับแกน XY
-    orientations = [
-        {"ew": pw, "el": pl, "label": "W x L (ปกติ)", "rotated": False},
-        {"ew": pl, "el": pw, "label": "L x W (หมุน 90°)", "rotated": True}
+    # ค้นหาทางเลือกการหมุน 3 มิติเต็มรูปแบบ (6-Way 3D Orientations)
+    # ไม่ว่าจะกรอกความกว้าง ความยาว หรือความหนามาในทิศทางใด ระบบจะทดลองให้ทุกด้านสามารถเป็นแนวตั้ง (Z-Axis) ได้
+    orientations_3d = [
+        {"flat_w": pw, "flat_l": pl, "vert_h": ph, "label": "W x L x H (ปกติ)"},
+        {"flat_w": pl, "flat_l": pw, "vert_h": ph, "label": "L x W x H"},
+        
+        {"flat_w": pw, "flat_l": ph, "vert_h": pl, "label": "W x H x L"},
+        {"flat_w": ph, "flat_l": pw, "vert_h": pl, "label": "H x W x L"},
+        
+        {"flat_w": pl, "flat_l": ph, "vert_h": pw, "label": "L x H x W"},
+        {"flat_w": ph, "flat_l": pl, "vert_h": pw, "label": "H x L x W"}
     ]
 
     best_options = []
@@ -78,10 +71,25 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
         if s_sorted not in unique_subsets_y and len(s_sorted) >= 2:
             unique_subsets_y.append(s_sorted)
 
-    # ค้นหาคอมบิเนชันที่มีประสิทธิภาพสูงสุด
-    for orient in orientations:
-        target_w = orient["ew"] + clearance
-        target_l = orient["el"] + clearance
+    # ค้นหาคอมบิเนชันที่มีประสิทธิภาพสูงสุดในเชิง 3 มิติ
+    for orient in orientations_3d:
+        ew = orient["flat_w"]
+        el = orient["flat_l"]
+        eh = orient["vert_h"]
+
+        # 1. เช็คความสูงตามทิศทางการหมุนนั้นๆ เพื่อคำนวณจำนวนชั้น (Layers)
+        if eh + clearance <= 111.0:
+            part_height = 111.0
+            layers = 2
+        elif eh + clearance <= 225.0:
+            part_height = 225.0
+            layers = 1
+        else:
+            # เกินข้อจำกัดความสูงภายในกล่อง Carton A10 (255 mm)
+            continue
+
+        target_w = ew + clearance
+        target_l = el + clearance
 
         for ax in subsets_x:
             for ay in unique_subsets_y:
@@ -123,12 +131,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
                         "orient_label": orient["label"],
                         "target_w": target_w,
                         "target_l": target_l,
-                        "p_w_disp": orient["ew"],
-                        "p_l_disp": orient["el"],
+                        "p_w_disp": ew,
+                        "p_l_disp": el,
+                        "p_h_disp": eh,
                         "total_dividers": len(ax) + len(ay)
                     })
 
-    # เรียงลำดับตัวเลือก: เอาตัวที่จุบอร์ดได้มากที่สุดก่อน และใช้จำนวนแผ่นกระดาษน้อยกว่าเป็นตัวตัดสินเมื่อจำนวนเท่ากัน
+    # เรียงลำดับตัวเลือก: เอาตัวที่จุได้มากที่สุดก่อน และใช้จำนวนแผ่นกระดาษน้อยกว่าเมื่อจำนวนชิ้นเท่ากัน
     if best_options:
         best_options.sort(key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
         return best_options
@@ -160,7 +169,7 @@ def draw_asymmetric_svg(opt):
     # 2. วาดขอบเนื้อกระดาษแผ่นพาร์ติชันตัวนอกสุด (Buffer Margins)
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # วาดแนวร่องขัดพาร์ติชันทั้งหมด (แสดงเป็นเส้นปะสีเขียว เพื่อความเข้าใจขอบเขตพาร์ติชันตามสเก็ตช์ของพี่)
+    # วาดแนวร่องขัดพาร์ติชันทั้งหมด (แสดงเป็นเส้นปะสีเขียว เพื่อความเข้าใจขอบเขตพาร์ติชัน)
     for sx in GROOVE_X_ALL:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
@@ -186,7 +195,7 @@ def draw_asymmetric_svg(opt):
         mid_x = pad_x + ((slot["x_start"] + slot_w/2) * scale)
         mid_y = pad_y + ((slot["y_start"] + slot_h/2) * scale)
         
-        # ขนาดชิ้นงานจริงสเกลบีบเล็กลงจากช่องเล็กน้อยเพื่อให้เห็นระยะ Clearance สวมถุง ESD
+        # ขนาดชิ้นงานที่จัดวางในสล็อตจริงตามสเกลที่หมุน
         draw_w = opt["p_l_disp"] * scale
         draw_h = opt["p_w_disp"] * scale
         
@@ -196,7 +205,7 @@ def draw_asymmetric_svg(opt):
         # วาดบ๊อกซ์ผลิตภัณฑ์ PCBA (สีส้ม ESD พาสเทล)
         svg += f'<rect x="{rect_x}" y="{rect_y}" width="{draw_w}" height="{draw_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="4" />'
         
-        # แสดงข้อความบอกมิติขนาดกว้าง x ยาว x สูง ลงบนตัวผลิตภัณฑ์
+        # แสดงข้อความระบุข้อมูลชิ้นงาน
         svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
         svg += f'<text x="{mid_x}" y="{mid_y + 11}" font-family="system-ui, sans-serif" font-size="9.5" fill="#ea580c" text-anchor="middle">{int(p_w)}x{int(p_l)}x{int(p_h)}</text>'
             
@@ -247,26 +256,9 @@ if options:
         m3.metric("ความจุรวม/กล่อง (Qty/Box)", f"{best_opt['qty_box']} Pcs")
 
     with col2:
-        st.subheader("📐 2. แผนผังการแพ็คแบบจำลองจริง (Asymmetric Partition Blueprint)")
+        st.subheader("📐 2. แผนผังการจัดวางจริง (Real Groove Partition Blueprint)")
         st.write(draw_asymmetric_svg(best_opt), unsafe_allow_html=True)
-        st.caption("หมายเหตุ: เส้นสีแดงทึบระบุแนวพาร์ติชันกระดาษใช้งานจริง เส้นประสีเขียวระบุร่องบากว่างเปล่า (Buffer) เพื่อป้องกันกระแทกขอบกล่อง")
-
-    # แสดงรายการทางเลือกทั้งหมดด้านล่าง
-    st.write("---")
-    st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดที่เป็นไปได้ทั้งหมด (All Feasible Configuration Summary)")
-    
-    summary_table = []
-    for idx, opt in enumerate(options[:8]): # แสดง Top 8 ทางเลือกเพื่อความสะอาดของตาราง
-        summary_table.append({
-            "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
-            "ทิศทางจัดวาง": opt["orient_label"],
-            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
-            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
-            "ความจุต่อชั้น (Layer Qty)": f"{opt['qty_layer']} Pcs",
-            "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
-            "ความจุรวมกล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
-        })
-    st.dataframe(summary_table, use_container_width=True)
+        st.caption("หมายเหตุ: เส้นประสีเทาเข้มแสดงพิกัดร่องฟันจริงจากดรออิ้งพาร์ติชัน 111x584 และ 111x393 สำหรับวางแผนการทำงานร่วมกับผู้ผลิต")
 
 else:
-    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่สามารถบรรจุผลิตภัณฑ์ขนาดนี้ลงในกล่อง Carton A10 ได้จริง กรุณาปรับระยะ Clearance หรือตรวจสอบขนาดผลิตภัณฑ์อีกครั้ง")
+    st.error("❌ ไม่พบขนาดกล่องพาร์ติชันที่เหมาะสมกับขนาดผลิตภัณฑ์ที่ระบุ กรุณาตรวจสอบขนาดและลองอีกครั้ง")
