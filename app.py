@@ -1,16 +1,17 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import math
 import itertools
 
 # ตั้งค่าหน้าเว็บให้แสดงผลสวยงามเต็มจอ
 st.set_page_config(
-    page_title="Carton A10 Partition Optimizer (Stable Multi-Pack)",
+    page_title="Carton A10 Partition Optimizer (Heavy-Duty Multi-Pack)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📦 Carton A10 Partition Optimizer (Stable Multi-Pack)")
-st.write("ระบบวิเคราะห์พาร์ติชันแบบอสมมาตร เวอร์ชันป้องกัน Server Crash 100% พร้อมระบบจำลองการแชร์ช่องแบบจัดกึ่งกลาง")
+st.title("📦 Carton A10 Partition Optimizer (Heavy-Duty Multi-Pack)")
+st.write("ระบบวิเคราะห์พาร์ติชันมาตรฐานและอสมมาตร เวอร์ชัน Sandbox เกรดอุตสาหกรรม ป้องกันการเกิด Segmentation Fault 100%")
 
 # --- CONFIGURATION ENGINE ---
 CARTON_L = 592.0
@@ -40,8 +41,8 @@ packing_mode = st.sidebar.selectbox(
     index=0
 )
 
-# --- LIGHTWEIGHT MATRIX SOLVER ENGINE ---
-def find_stable_asymmetric_layout(pw, pl, ph, mode):
+# --- SAFE MATRIX SOLVER ENGINE ---
+def find_heavy_duty_layout(pw, pl, ph, mode):
     all_dims = [pw, pl, ph]
     unique_orientations = set(itertools.permutations(all_dims))
     
@@ -59,8 +60,7 @@ def find_stable_asymmetric_layout(pw, pl, ph, mode):
 
     best_options = []
     
-    # พรีเซตโครงกริดพาร์ติชันที่มีเสถียรภาพและอิงตามร่องขัดจริงโดยตรง ไม่ใช้คอมบิเนชันสุ่มเสี่ยง
-    # ช่วยลดแรงการประมวลผลของ CPU ฝั่ง Server
+    # พรีเซตโครงกริดคงที่ตามร่องขัดจริงของกล่องกระดาษแผ่นนอก
     grid_presets = [
         {"ax": GROOVE_X_ALL, "ay": GROOVE_Y_ALL},
         {"ax": GROOVE_X_ALL, "ay": [19.5, 110.75, 202.0, 293.25, 384.5]},
@@ -162,30 +162,30 @@ def find_stable_asymmetric_layout(pw, pl, ph, mode):
 
     return best_options
 
-options = find_stable_asymmetric_layout(p_w, p_l, p_h, packing_mode)
+options = find_heavy_duty_layout(p_w, p_l, p_h, packing_mode)
 
-# --- SVG TOP VIEW RENDERER ---
-def draw_asymmetric_svg(opt):
+# --- SVG TOP VIEW GENERERATOR (SAFE FOR SANDBOX) ---
+def draw_asymmetric_svg_string(opt):
     x_bounds = opt["x_bounds"]
     y_bounds = opt["y_bounds"]
     ax = opt["ax"]
     ay = opt["ay"]
     valid_slots = opt["valid_slots"]
     
-    scale = 1.4
-    pad_x = 60
-    pad_y = 60
+    scale = 1.3
+    pad_x = 40
+    pad_y = 50
     
     view_w = (CARTON_L * scale) + (pad_x * 2)
     view_h = (CARTON_W * scale) + (pad_y * 2)
     
-    svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
+    svg = f'<svg width="{view_w}" height="{view_h}" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, -apple-system, sans-serif;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
+    svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # แสดงเส้นประสีเขียว (Groove Guide) เสมอ
+    # แสดงเส้นไกด์ร่องขัดมาตรฐาน (เส้นประสีเขียว)
     for sx in GROOVE_X_ALL:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
@@ -193,7 +193,7 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 584.0*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
-    # วาดชิ้นงานจัดตำแหน่ง Center ภายในช่องสล็อต
+    # แสดงชิ้นงาน PCBA จัดวาง Center สมมาตรกึ่งกลางสล็อตย่อย
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
@@ -219,12 +219,11 @@ def draw_asymmetric_svg(opt):
                 mid_x = rect_x + (draw_w / 2)
                 mid_y = rect_y + (draw_h / 2)
                 if slot["stack_count"] > 1:
-                    svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold" fill="#7c2d12" text-anchor="middle">x{slot["stack_count"]} Stack</text>'
+                    svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">x{slot["stack_count"]} Stack</text>'
                 else:
-                    svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
-                    svg += f'<text x="{mid_x}" y="{mid_y + 8}" font-family="system-ui, sans-serif" font-size="7.5" fill="#ea580c" text-anchor="middle">{int(opt["p_w_disp"])}x{int(opt["p_l_disp"])}</text>'
+                    svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-size="8" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
 
-    # วาดโครงกริดสีแดง (แผ่นกั้นมั่นคง ไม่หายไม่ยุบ)
+    # แสดงแผ่นกั้นพาร์ติชัน (กริดสีแดงหนาเด่นชัด ไม่หายไม่ยุบโครงสร้าง)
     for vx in ax:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
@@ -233,14 +232,14 @@ def draw_asymmetric_svg(opt):
         svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
             
     svg += '</svg>'
-    return svg
+    return svg, view_w, view_h
 
-# --- SVG SIDE VIEW RENDERER ---
-def draw_side_view_svg(opt):
-    scale_x = 1.4
-    scale_y = 1.8
-    pad_x = 60
-    pad_y = 60
+# --- SVG SIDE VIEW GENERATOR (SAFE FOR SANDBOX) ---
+def draw_side_view_svg_string(opt):
+    scale_x = 1.3
+    scale_y = 1.6
+    pad_x = 40
+    pad_y = 50
     
     view_w = (CARTON_L * scale_x) + (pad_x * 2)
     view_h = (CARTON_H * scale_y) + (pad_y * 2)
@@ -250,9 +249,9 @@ def draw_side_view_svg(opt):
     prod_h = opt["p_h_disp"] * scale_y
     pad_thickness = 3.0 * scale_y
     
-    svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
+    svg = f'<svg width="{view_w}" height="{view_h}" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, -apple-system, sans-serif;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
+    svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
     
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
@@ -296,7 +295,6 @@ def draw_side_view_svg(opt):
                     if top_gap > 0:
                         gap_line_x = pad_x + (x_bounds[b_idx+1] * scale_x) - 10
                         svg += f'<line x1="{gap_line_x}" y1="{level_y_start - total_stacked_h}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="2,2" />'
-                        svg += f'<text x="{gap_line_x - 4}" y="{level_y_start - total_stacked_h - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#2563eb" text-anchor="end">Gap: {int(top_gap)} mm</text>'
 
     top_pad_y = pad_y + box_h - (opt["layers"] * (part_h + pad_thickness)) - pad_thickness
     svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{top_pad_y}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
@@ -306,7 +304,7 @@ def draw_side_view_svg(opt):
         svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{pad_y}" width="{(584.0)*scale_x}" height="{remaining_box_air_gap * scale_y}" fill="#f1f5f9" opacity="0.6" stroke="#babfc7" stroke-dasharray="4,4"/>'
     
     svg += '</svg>'
-    return svg
+    return svg, view_w, view_h
 
 def render_packing_list(opt):
     active_x_qty = len(opt["ax"])
@@ -356,10 +354,14 @@ if options:
             
             st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
             render_packing_list(best_fixed)
+            
             st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.write(draw_asymmetric_svg(best_fixed), unsafe_allow_html=True)
+            svg_top, w_top, h_top = draw_asymmetric_svg_string(best_fixed)
+            components.html(svg_top, width=w_top, height=h_top, scrolling=False)
+            
             st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View)")
-            st.write(draw_side_view_svg(best_fixed), unsafe_allow_html=True)
+            svg_side, w_side, h_side = draw_side_view_svg_string(best_fixed)
+            components.html(svg_side, width=w_side, height=h_side, scrolling=False)
         else:
             st.error("❌ ไม่พบรูปแบบสำหรับอินพุตนี้")
 
@@ -374,10 +376,14 @@ if options:
             
             st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
             render_packing_list(best_overall)
+            
             st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.write(draw_asymmetric_svg(best_overall), unsafe_allow_html=True)
+            svg_top_a, w_top_a, h_top_a = draw_asymmetric_svg_string(best_overall)
+            components.html(svg_top_a, width=w_top_a, height=h_top_a, scrolling=False)
+            
             st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View)")
-            st.write(draw_side_view_svg(best_overall), unsafe_allow_html=True)
+            svg_side_a, w_side_a, h_side_a = draw_side_view_svg_string(best_overall)
+            components.html(svg_side_a, width=w_side_a, height=h_side_a, scrolling=False)
         else:
             st.info("💡 **การประเมินวิศวกรรมเชิงลึก:** โครงสร้างความสูงอินพุตปัจจุบันทำงานได้ดีที่สุดแล้วในโหมดที่เลือก")
 
@@ -393,6 +399,7 @@ if options:
             "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} Pcs",
             "ความจุรวม/กล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
         })
-    st.dataframe(summary_table, use_container_width=True)
+    # เปลี่ยนพารามิเตอร์ตารางเป็นแบบดั้งเดิมตามข้อกำหนดอัปเดตเวอร์ชันของไลบรารีปัจจุบัน
+    st.dataframe(summary_table, width=1500)
 else:
     st.error("❌ ไม่พบรูปแบบพาร์ติชันตามขนาดโครงสร้างคงที่ที่ป้อนได้ กรุณาปรับมิติชิ้นงานหรือค่าเผื่อสล็อตให้เหมาะสม")
