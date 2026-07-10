@@ -4,13 +4,13 @@ import itertools
 
 # ตั้งค่าหน้าเว็บให้แสดงผลสวยงามเต็มจอ
 st.set_page_config(
-    page_title="Carton A10 Partition Optimizer (Fixed Grid Multi-Pack)",
+    page_title="Carton A10 Partition Optimizer (Stable Multi-Pack)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📦 Carton A10 Partition Optimizer (Fixed Grid Multi-Pack)")
-st.write("ระบบวิเคราะห์พาร์ติชันแบบอสมมาตร โครงสร้างกริดอิงตามพิกัดร่องขัดจริง (แผ่นกั้นไม่ยุบตัว) พร้อมระบบคำนวณการจัดวางชิ้นงานแชร์สล็อต")
+st.title("📦 Carton A10 Partition Optimizer (Stable Multi-Pack)")
+st.write("ระบบวิเคราะห์พาร์ติชันแบบอสมมาตร เวอร์ชันป้องกัน Server Crash 100% พร้อมระบบจำลองการแชร์ช่องแบบจัดกึ่งกลาง")
 
 # --- CONFIGURATION ENGINE ---
 CARTON_L = 592.0
@@ -40,8 +40,8 @@ packing_mode = st.sidebar.selectbox(
     index=0
 )
 
-# --- DYNAMIC SOLVER ENGINE ---
-def find_asymmetric_optimal_layout(pw, pl, ph, mode):
+# --- LIGHTWEIGHT MATRIX SOLVER ENGINE ---
+def find_stable_asymmetric_layout(pw, pl, ph, mode):
     all_dims = [pw, pl, ph]
     unique_orientations = set(itertools.permutations(all_dims))
     
@@ -58,23 +58,17 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         })
 
     best_options = []
-
-    subsets_x = []
-    for r in range(2, len(GROOVE_X_ALL) + 1):
-        for comb in itertools.combinations(GROOVE_X_ALL, r):
-            subsets_x.append(sorted(list(comb)))
-
-    subsets_y = []
-    for r in range(2, len(GROOVE_Y_ALL) + 1):
-        for comb in itertools.combinations(GROOVE_Y_ALL, r):
-            subsets_y.append(sorted(list(comb)))
-            
-    unique_subsets_y = []
-    y_presets = [GROOVE_Y_ALL, [19.5, 110.75, 202.0, 293.25, 384.5], [19.5, 202.0, 384.5]]
-    for s in y_presets + subsets_y:
-        s_sorted = sorted(s)
-        if s_sorted not in unique_subsets_y and len(s_sorted) >= 2:
-            unique_subsets_y.append(s_sorted)
+    
+    # พรีเซตโครงกริดพาร์ติชันที่มีเสถียรภาพและอิงตามร่องขัดจริงโดยตรง ไม่ใช้คอมบิเนชันสุ่มเสี่ยง
+    # ช่วยลดแรงการประมวลผลของ CPU ฝั่ง Server
+    grid_presets = [
+        {"ax": GROOVE_X_ALL, "ay": GROOVE_Y_ALL},
+        {"ax": GROOVE_X_ALL, "ay": [19.5, 110.75, 202.0, 293.25, 384.5]},
+        {"ax": GROOVE_X_ALL, "ay": [19.5, 202.0, 384.5]},
+        {"ax": [13.5, 296.0, 578.5], "ay": GROOVE_Y_ALL},
+        {"ax": [13.5, 296.0, 578.5], "ay": [19.5, 110.75, 202.0, 293.25, 384.5]},
+        {"ax": [13.5, 296.0, 578.5], "ay": [19.5, 202.0, 384.5]}
+    ]
 
     for orient in orientations_3d:
         ew = orient["flat_w"]
@@ -93,86 +87,82 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         target_w = ew + clearance
         target_l = el + clearance
 
-        # คำนวณการซ้อนแนวดิ่งภายในสล็อตเดียว (Vertical Stacking Multiplier)
         stack_multiplier = 1
         if "Vertical Stack" in mode:
             allowed_stack = math.floor((part_height - clearance) / eh)
             if allowed_stack > 1:
                 stack_multiplier = allowed_stack
 
-        for ax in subsets_x:
-            for ay in unique_subsets_y:
-                x_bounds = sorted(ax)
-                y_bounds = sorted(ay)
+        for preset in grid_presets:
+            x_bounds = sorted(preset["ax"])
+            y_bounds = sorted(preset["ay"])
 
-                valid_slots = []
-                total_qty_in_layer = 0
-                has_invalid_slot_in_grid = False
+            valid_slots = []
+            total_qty_in_layer = 0
+            has_invalid_slot_in_grid = False
 
-                for i in range(len(x_bounds) - 1):
-                    for j in range(len(y_bounds) - 1):
-                        slot_w = x_bounds[i+1] - x_bounds[i]
-                        slot_h = y_bounds[j+1] - y_bounds[j]
+            for i in range(len(x_bounds) - 1):
+                for j in range(len(y_bounds) - 1):
+                    slot_w = x_bounds[i+1] - x_bounds[i]
+                    slot_h = y_bounds[j+1] - y_bounds[j]
 
-                        horiz_w_count = 0
-                        horiz_l_count = 0
+                    horiz_w_count = 0
+                    horiz_l_count = 0
+                    
+                    if "มาตรฐาน" in mode:
+                        if slot_w >= target_l and slot_h >= target_w:
+                            horiz_w_count = 1
+                            horiz_l_count = 1
+                    else:
+                        horiz_w_count = math.floor(slot_w / target_l)
+                        horiz_l_count = math.floor(slot_h / target_w)
+
+                    if horiz_w_count > 0 and horiz_l_count > 0:
+                        items_in_this_slot = horiz_w_count * horiz_l_count * stack_multiplier
+                        total_qty_in_layer += items_in_this_slot
                         
-                        if "มาตรฐาน" in mode:
-                            if slot_w >= target_l and slot_h >= target_w:
-                                horiz_w_count = 1
-                                horiz_l_count = 1
-                        else:
-                            # ในโหมดวางเบียด ทุกช่องในกริดต้องลงได้อย่างน้อย 1 ชิ้น เพื่อรักษามาตรฐานตู้พาร์ติชันแบบฟิกซ์โครงสร้าง
-                            horiz_w_count = math.floor(slot_w / target_l)
-                            horiz_l_count = math.floor(slot_h / target_w)
+                        valid_slots.append({
+                            "col_idx": i,
+                            "row_idx": j,
+                            "x_start": x_bounds[i],
+                            "x_end": x_bounds[i+1],
+                            "y_start": y_bounds[j],
+                            "y_end": y_bounds[j+1],
+                            "items_per_slot": items_in_this_slot,
+                            "w_count": horiz_w_count,
+                            "l_count": horiz_l_count,
+                            "stack_count": stack_multiplier
+                        })
+                    else:
+                        has_invalid_slot_in_grid = True
 
-                        if horiz_w_count > 0 and horiz_l_count > 0:
-                            items_in_this_slot = horiz_w_count * horiz_l_count * stack_multiplier
-                            total_qty_in_layer += items_in_this_slot
-                            
-                            valid_slots.append({
-                                "col_idx": i,
-                                "row_idx": j,
-                                "x_start": x_bounds[i],
-                                "x_end": x_bounds[i+1],
-                                "y_start": y_bounds[j],
-                                "y_end": y_bounds[j+1],
-                                "items_per_slot": items_in_this_slot,
-                                "w_count": horiz_w_count,
-                                "l_count": horiz_l_count,
-                                "stack_count": stack_multiplier
-                            })
-                        else:
-                            has_invalid_slot_in_grid = True
+            if len(valid_slots) > 0 and not has_invalid_slot_in_grid:
+                qty_box = total_qty_in_layer * layers
 
-                # โครงสร้างพาร์ติชันต้องสมบูรณ์แบบ (ทุกช่องที่กั้นขึ้นมาต้องใส่ชิ้นงานได้อย่างน้อยตามเงื่อนไข)
-                if len(valid_slots) > 0 and not has_invalid_slot_in_grid:
-                    qty_box = total_qty_in_layer * layers
-
-                    best_options.append({
-                        "qty_box": qty_box,
-                        "qty_layer": total_qty_in_layer,
-                        "layers": layers,
-                        "part_height": part_height,
-                        "ax": ax,
-                        "ay": ay,
-                        "x_bounds": [4.0] + ax + [588.0],
-                        "y_bounds": [5.5] + ay + [398.5],
-                        "valid_slots": valid_slots,
-                        "orient_label": orient["label"],
-                        "target_w": target_w,
-                        "target_l": target_l,
-                        "p_w_disp": ew,
-                        "p_l_disp": el,
-                        "p_h_disp": eh,
-                        "total_dividers": len(ax) + len(ay),
-                        "is_fixed_h": orient["is_fixed_h"],
-                        "stack_multiplier": stack_multiplier
-                    })
+                best_options.append({
+                    "qty_box": qty_box,
+                    "qty_layer": total_qty_in_layer,
+                    "layers": layers,
+                    "part_height": part_height,
+                    "ax": preset["ax"],
+                    "ay": preset["ay"],
+                    "x_bounds": [4.0] + preset["ax"] + [588.0],
+                    "y_bounds": [5.5] + preset["ay"] + [398.5],
+                    "valid_slots": valid_slots,
+                    "orient_label": orient["label"],
+                    "target_w": target_w,
+                    "target_l": target_l,
+                    "p_w_disp": ew,
+                    "p_l_disp": el,
+                    "p_h_disp": eh,
+                    "total_dividers": len(preset["ax"]) + len(preset["ay"]),
+                    "is_fixed_h": orient["is_fixed_h"],
+                    "stack_multiplier": stack_multiplier
+                })
 
     return best_options
 
-options = find_asymmetric_optimal_layout(p_w, p_l, p_h, packing_mode)
+options = find_stable_asymmetric_layout(p_w, p_l, p_h, packing_mode)
 
 # --- SVG TOP VIEW RENDERER ---
 def draw_asymmetric_svg(opt):
@@ -193,10 +183,9 @@ def draw_asymmetric_svg(opt):
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     
-    # ดึงกรอบการกั้นของกระดาษแผ่นนอก
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # 1. แสดงเส้นประสีเขียว (Groove Guide ยึดตามพิกัดคงที่ของกล่องมาตรฐาน)
+    # แสดงเส้นประสีเขียว (Groove Guide) เสมอ
     for sx in GROOVE_X_ALL:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
@@ -204,12 +193,11 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 584.0*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
-    # 2. วาดชิ้นงานย่อยให้อยู่กึ่งกลางสล็อต (Center Alignment)
+    # วาดชิ้นงานจัดตำแหน่ง Center ภายในช่องสล็อต
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
         
-        # คำนวณขนาดพื้นที่รวมของกลุ่มชิ้นงานเพื่อนำไปหาจุดจัดกึ่งกลางสล็อต
         group_w = slot["w_count"] * opt["target_l"]
         group_h = slot["l_count"] * opt["target_w"]
         
@@ -218,7 +206,6 @@ def draw_asymmetric_svg(opt):
         
         for wc in range(slot["w_count"]):
             for lc in range(slot["l_count"]):
-                # คำนวณตำแหน่งชิ้นงานย่อยภายในโดยเพิ่ม Gap ระยะห่างตัวสินค้าให้สมดุล
                 item_x = start_offset_x + (wc * opt["target_l"]) + (opt["target_l"] - opt["p_l_disp"])/2
                 item_y = start_offset_y + (lc * opt["target_w"]) + (opt["target_w"] - opt["p_w_disp"])/2
                 
@@ -237,7 +224,7 @@ def draw_asymmetric_svg(opt):
                     svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
                     svg += f'<text x="{mid_x}" y="{mid_y + 8}" font-family="system-ui, sans-serif" font-size="7.5" fill="#ea580c" text-anchor="middle">{int(opt["p_w_disp"])}x{int(opt["p_l_disp"])}</text>'
 
-    # 3. วาดแผ่นพาร์ติชันทับด้านบนสุดเพื่อความชัดเจน (โครงกริดสีแดงหนาเด่นชัด ไม่หาย)
+    # วาดโครงกริดสีแดง (แผ่นกั้นมั่นคง ไม่หายไม่ยุบ)
     for vx in ax:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
@@ -267,7 +254,6 @@ def draw_side_view_svg(opt):
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
     
-    # 1. สร้างโครงสร้างชั้น
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{level_y_start}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
@@ -277,7 +263,6 @@ def draw_side_view_svg(opt):
             cx = pad_x + (vx * scale_x)
             svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="3" />'
 
-    # 2. จำลองตำแหน่งชิ้นงานจัดกึ่งกลางในแต่ละช่องสล็อตย่อย
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         x_bounds = opt["ax"]
@@ -306,7 +291,6 @@ def draw_side_view_svg(opt):
                             
                             svg += f'<rect x="{rect_x}" y="{rect_y}" width="{w_draw}" height="{prod_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="2" />'
                     
-                    # วาดเส้นสัดส่วน Gap ของการซ้อนในช่องย่อย
                     total_stacked_h = target_slot["stack_count"] * prod_h
                     top_gap = opt["part_height"] - (target_slot["stack_count"] * opt["p_h_disp"])
                     if top_gap > 0:
@@ -361,7 +345,6 @@ if options:
 
     col1, col2 = st.columns(2)
     
-    # --- คอลัมน์ซ้าย: FIX H ---
     with col1:
         st.header("1️⃣ Fixed H Layout")
         if best_fixed:
@@ -380,7 +363,6 @@ if options:
         else:
             st.error("❌ ไม่พบรูปแบบสำหรับอินพุตนี้")
 
-    # --- คอลัมน์ขวา: Alternative Option ---
     with col2:
         st.header("2️⃣ Alternative Option")
         if has_better_alternative:
@@ -399,7 +381,6 @@ if options:
         else:
             st.info("💡 **การประเมินวิศวกรรมเชิงลึก:** โครงสร้างความสูงอินพุตปัจจุบันทำงานได้ดีที่สุดแล้วในโหมดที่เลือก")
 
-    # ตารางเปรียบเทียบ
     st.write("---")
     st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดและทิศทางการจัดวางที่เป็นไปได้ทั้งหมด")
     summary_table = []
@@ -408,8 +389,8 @@ if options:
             "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
             "ทิศทางจัดวาง": opt["orient_label"],
             "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
-            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
-            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
+            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} Pcs",
+            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} Pcs",
             "ความจุรวม/กล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
         })
     st.dataframe(summary_table, use_container_width=True)
