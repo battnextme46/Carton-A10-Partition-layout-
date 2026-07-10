@@ -1,16 +1,17 @@
 import streamlit as st
 import math
 import itertools
+import base64  # เพิ่มสำหรับการเข้ารหัสรูปภาพให้เสถียร 100%
 
 # ตั้งค่าหน้าเว็บให้เสถียรและแสดงผลกว้างเต็มจอ
 st.set_page_config(
-    page_title="Carton A10 Partition Optimizer (Ultra-Stable v3)",
+    page_title="Carton A10 Partition Optimizer (Ultra-Stable v4)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📦 Carton A10 Partition Optimizer (Ultra-Stable v3)")
-st.write("เวอร์ชันเสถียรสูงสุด: ปรับปรุงการเรนเดอร์กราฟิกแบบ Aggregate ป้องกัน Server Crash และรองรับขนาดหน้าจอแบบ Responsive")
+st.title("📦 Carton A10 Partition Optimizer (Ultra-Stable v4)")
+st.write("เวอร์ชันเสถียรสูงสุด: แก้ไขระบบเรนเดอร์กราฟิก SVG ผ่าน Base64 ป้องกันภาพหายจากระบบ Sandbox ของเซิร์ฟเวอร์")
 
 # --- CONFIGURATION ENGINE ---
 CARTON_L = 592.0
@@ -59,7 +60,6 @@ def find_ultra_stable_layout(pw, pl, ph, mode):
 
     best_options = []
     
-    # พรีเซตกริดที่อ้างอิงร่องขัดจริงของกล่องกระดาษมาสเตอร์ A10
     grid_presets = [
         {"ax": GROOVE_X_ALL, "ay": GROOVE_Y_ALL},
         {"ax": GROOVE_X_ALL, "ay": [19.5, 110.75, 202.0, 293.25, 384.5]},
@@ -163,30 +163,30 @@ def find_ultra_stable_layout(pw, pl, ph, mode):
 
 options = find_ultra_stable_layout(p_w, p_l, p_h, packing_mode)
 
+# --- ฟังก์ชันช่วยแปลง SVG เป็น Base64 ป้องกันการโดนบล็อก ---
+def render_svg_safely(svg_string):
+    b64 = base64.b64encode(svg_string.encode('utf-8')).decode('utf-8')
+    return f"data:image/svg+xml;base64,{b64}"
+
 # --- LIGHTWEIGHT AGGREGATE SVG TOP VIEW ---
 def draw_responsive_top_view(opt):
-    # ปรับเป็นระบบ ViewBox แบบยืดหยุ่นเต็มกรอบเบราว์เซอร์ ไม่เกิดภาพล้นจอ
     view_w = 680
     view_h = 490
     scale = 1.0
     pad_x = 44
     pad_y = 55
     
-    svg = f'<svg width="100%" height="100%" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, sans-serif; border: 1px solid #cbd5e1; border-radius: 8px;">'
+    svg = f'<svg width="{view_w}" height="{view_h}" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, sans-serif;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="3" rx="4" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-size="15" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
-    
-    # แสดงพื้นที่ Buffer ปลอดภัยขอบนอก
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="3,3" stroke-width="1" />'
 
-    # เรนเดอร์กล่องข้อความแบบสล็อต (Aggregate Slot Rendering) หมดปัญหาสตริงบวมล้น
     for slot in opt["valid_slots"]:
         sx = pad_x + slot["x_start"] * scale
         sy = pad_y + slot["y_start"] * scale
         sw = (slot["x_end"] - slot["x_start"]) * scale
         sh = (slot["y_end"] - slot["y_start"]) * scale
         
-        # วาดโซนจองพื้นที่ในช่องกั้นพาร์ติชัน
         svg += f'<rect x="{sx+3}" y="{sy+3}" width="{sw-6}" height="{sh-6}" fill="#fff7ed" stroke="#fed7aa" stroke-width="1" rx="2" />'
         
         mx = sx + sw/2
@@ -199,7 +199,6 @@ def draw_responsive_top_view(opt):
         else:
             svg += f'<text x="{mx}" y="{my + 3}" font-size="10" font-weight="bold" fill="#c2410c" text-anchor="middle">PCBA: {total_pieces} ชิ้น/ช่อง</text>'
 
-    # วาดแผ่นกั้นพาร์ติชันหลัก (เส้นสีแดง มั่นคง แข็งแรง)
     for vx in opt["ax"]:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="3" />'
@@ -208,7 +207,7 @@ def draw_responsive_top_view(opt):
         svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="3" />'
             
     svg += '</svg>'
-    return svg
+    return render_svg_safely(svg)
 
 # --- LIGHTWEIGHT AGGREGATE SVG SIDE VIEW ---
 def draw_responsive_side_view(opt):
@@ -223,7 +222,7 @@ def draw_responsive_side_view(opt):
     part_h = opt["part_height"] * scale_y
     pad_thickness = 3.0 * scale_y
     
-    svg = f'<svg width="100%" height="100%" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, sans-serif; border: 1px solid #cbd5e1; border-radius: 8px;">'
+    svg = f'<svg width="{view_w}" height="{view_h}" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; font-family: system-ui, sans-serif;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="3" rx="3" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 15}" font-size="15" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
     
@@ -236,7 +235,6 @@ def draw_responsive_side_view(opt):
             cx = pad_x + (vx * scale_x)
             svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="2.5" />'
             
-        # เขียนตัวแทนความสูงของชั้นงานบรรจุ
         mx_layer = pad_x + (CARTON_L * scale_x) / 2
         my_layer = level_y_start - (part_h / 2)
         svg += f'<text x="{mx_layer}" y="{my_layer + 4}" font-size="11" font-weight="bold" fill="#1e293b" text-anchor="middle" opacity="0.65">--- ชั้นบรรจุที่ {layer_idx + 1} (ความสูงแผ่นกั้น: {int(opt["part_height"])} mm) ---</text>'
@@ -250,7 +248,7 @@ def draw_responsive_side_view(opt):
         svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y + (remaining_box_air_gap * scale_y)/2 + 4}" font-size="10" fill="#64748b" text-anchor="middle">พื้นที่ว่างด้านบนกล่อง (Air Gap): {int(remaining_box_air_gap)} mm</text>'
     
     svg += '</svg>'
-    return svg
+    return render_svg_safely(svg)
 
 def render_packing_list(opt):
     active_x_qty = len(opt["ax"])
@@ -302,10 +300,11 @@ if options:
             render_packing_list(best_fixed)
             
             st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.html(draw_responsive_top_view(best_fixed))
+            # เปลี่ยนมาเรนเดอร์ผ่าน st.image ด้วยลิ้งก์ Base64 มั่นคงปลอดภัยชัวร์
+            st.image(draw_responsive_top_view(best_fixed), use_container_width=True)
             
             st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View)")
-            st.html(draw_responsive_side_view(best_fixed))
+            st.image(draw_responsive_side_view(best_fixed), use_container_width=True)
         else:
             st.error("❌ ไม่พบรูปแบบสำหรับอินพุตนี้")
 
@@ -322,10 +321,10 @@ if options:
             render_packing_list(best_overall)
             
             st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.html(draw_responsive_top_view(best_overall))
+            st.image(draw_responsive_top_view(best_overall), use_container_width=True)
             
             st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View)")
-            st.html(draw_responsive_side_view(best_overall))
+            st.image(draw_responsive_side_view(best_overall), use_container_width=True)
         else:
             st.info("💡 **การประเมินวิศวกรรมเชิงลึก:** โครงสร้างความสูงอินพุตปัจจุบันทำงานได้ดีที่สุดแล้วในโหมดที่เลือก")
 
@@ -341,7 +340,6 @@ if options:
             "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} Pcs",
             "ความจุรวม/กล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
         })
-    # เปลี่ยนมาใช้การตั้งค่ากว้างแบบ 'stretch' ตามกฎอัปเดตใหม่ของ streamlit ปี 2026
     st.dataframe(summary_table, width="stretch")
 else:
     st.error("❌ ไม่พบรูปแบบพาร์ติชันตามขนาดโครงสร้างคงที่ที่ป้อนได้ กรุณาปรับมิติชิ้นงานหรือค่าเผื่อสล็อตให้เหมาะสม")
