@@ -4,13 +4,13 @@ import itertools
 
 # ตั้งค่าหน้าเว็บให้แสดงผลสวยงามเต็มจอ
 st.set_page_config(
-    page_title="Carton A10 Partition Optimizer (Multi-Pack)",
+    page_title="Carton A10 Partition Optimizer (Fixed Grid Multi-Pack)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📦 Carton A10 Partition Optimizer (Multi-Pack Support)")
-st.write("ระบบวิเคราะห์พาร์ติชันแบบอสมมาตร พร้อมฟังก์ชันจำลองการจัดวางชิ้นงานแบบแชร์ช่อง (วางเบียดแนวราบ / วางซ้อนแนวตั้ง)")
+st.title("📦 Carton A10 Partition Optimizer (Fixed Grid Multi-Pack)")
+st.write("ระบบวิเคราะห์พาร์ติชันแบบอสมมาตร โครงสร้างกริดอิงตามพิกัดร่องขัดจริง (แผ่นกั้นไม่ยุบตัว) พร้อมระบบคำนวณการจัดวางชิ้นงานแชร์สล็อต")
 
 # --- CONFIGURATION ENGINE ---
 CARTON_L = 592.0
@@ -22,7 +22,7 @@ GROOVE_Y_ALL = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=40.0, step=1.0)
+p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=30.0, step=1.0)
 p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=30.0, step=1.0)
 p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=50.0, step=1.0)
 
@@ -81,7 +81,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        # เช็คขีดจำกัดความสูงพาร์ติชัน
         if eh + clearance <= 111.0:
             part_height = 111.0
             layers = 2
@@ -94,12 +93,9 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         target_w = ew + clearance
         target_l = el + clearance
 
-        #คำนวณหาจำนวนการซ้อนแนวตั้งภายในสล็อตเดียว (Vertical Stacking Multiplier)
+        # คำนวณการซ้อนแนวดิ่งภายในสล็อตเดียว (Vertical Stacking Multiplier)
         stack_multiplier = 1
         if "Vertical Stack" in mode:
-            # หาว่าความสูงพาร์ติชันจุชิ้นงาน+clearance ซ้อนกันได้กี่ชิ้น
-            allowed_stack = math.floor(part_height / target_w) # ตรวจสอบแกนความสูงเทียบมิติชิ้นงานที่หมุน
-            # ปรับปรุงให้ยืดหยุ่นตามพิกัดความหนาจริง
             allowed_stack = math.floor((part_height - clearance) / eh)
             if allowed_stack > 1:
                 stack_multiplier = allowed_stack
@@ -111,13 +107,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
 
                 valid_slots = []
                 total_qty_in_layer = 0
+                has_invalid_slot_in_grid = False
 
                 for i in range(len(x_bounds) - 1):
                     for j in range(len(y_bounds) - 1):
                         slot_w = x_bounds[i+1] - x_bounds[i]
                         slot_h = y_bounds[j+1] - y_bounds[j]
 
-                        # คำนวณหาจำนวนชิ้นที่วางเบียดได้ในช่องกั้นนี้ (Horizontal Multiplier)
                         horiz_w_count = 0
                         horiz_l_count = 0
                         
@@ -125,7 +121,8 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                             if slot_w >= target_l and slot_h >= target_w:
                                 horiz_w_count = 1
                                 horiz_l_count = 1
-                        else: # โหมดวางเบียด
+                        else:
+                            # ในโหมดวางเบียด ทุกช่องในกริดต้องลงได้อย่างน้อย 1 ชิ้น เพื่อรักษามาตรฐานตู้พาร์ติชันแบบฟิกซ์โครงสร้าง
                             horiz_w_count = math.floor(slot_w / target_l)
                             horiz_l_count = math.floor(slot_h / target_w)
 
@@ -145,8 +142,11 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                                 "l_count": horiz_l_count,
                                 "stack_count": stack_multiplier
                             })
+                        else:
+                            has_invalid_slot_in_grid = True
 
-                if len(valid_slots) > 0:
+                # โครงสร้างพาร์ติชันต้องสมบูรณ์แบบ (ทุกช่องที่กั้นขึ้นมาต้องใส่ชิ้นงานได้อย่างน้อยตามเงื่อนไข)
+                if len(valid_slots) > 0 and not has_invalid_slot_in_grid:
                     qty_box = total_qty_in_layer * layers
 
                     best_options.append({
@@ -191,40 +191,59 @@ def draw_asymmetric_svg(opt):
     
     svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW (บรรจุรวมในช่องกั้น)</text>'
+    svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
+    
+    # ดึงกรอบการกั้นของกระดาษแผ่นนอก
+    svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    for vx in ax:
-        cx = pad_x + (vx * scale)
-        svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" />'
-    for vy in ay:
-        cy = pad_y + (vy * scale)
-        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" />'
-        
+    # 1. แสดงเส้นประสีเขียว (Groove Guide ยึดตามพิกัดคงที่ของกล่องมาตรฐาน)
+    for sx in GROOVE_X_ALL:
+        cx = pad_x + (sx * scale)
+        svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+    for sy in GROOVE_Y_ALL:
+        cy = pad_y + (sy * scale)
+        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 584.0*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+
+    # 2. วาดชิ้นงานย่อยให้อยู่กึ่งกลางสล็อต (Center Alignment)
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
         
-        # วาดกล่องผลิตภัณฑ์ย่อยภายในตามจำนวนที่วางเบียดได้ (w_count และ l_count)
+        # คำนวณขนาดพื้นที่รวมของกลุ่มชิ้นงานเพื่อนำไปหาจุดจัดกึ่งกลางสล็อต
+        group_w = slot["w_count"] * opt["target_l"]
+        group_h = slot["l_count"] * opt["target_w"]
+        
+        start_offset_x = slot["x_start"] + (slot_w - group_w) / 2
+        start_offset_y = slot["y_start"] + (slot_h - group_h) / 2
+        
         for wc in range(slot["w_count"]):
             for lc in range(slot["l_count"]):
-                # คำนวณพิกัดย่อยชิ้นงานในสล็อต
-                sub_x = slot["x_start"] + (wc * opt["target_l"]) + (slot_w - (slot["w_count"] * opt["target_l"]))/2
-                sub_y = slot["y_start"] + (lc * opt["target_w"]) + (slot_h - (slot["l_count"] * opt["target_w"]))/2
+                # คำนวณตำแหน่งชิ้นงานย่อยภายในโดยเพิ่ม Gap ระยะห่างตัวสินค้าให้สมดุล
+                item_x = start_offset_x + (wc * opt["target_l"]) + (opt["target_l"] - opt["p_l_disp"])/2
+                item_y = start_offset_y + (lc * opt["target_w"]) + (opt["target_w"] - opt["p_w_disp"])/2
                 
-                rect_x = pad_x + (sub_x * scale)
-                rect_y = pad_y + (sub_y * scale)
+                rect_x = pad_x + (item_x * scale)
+                rect_y = pad_y + (item_y * scale)
                 draw_w = opt["p_l_disp"] * scale
                 draw_h = opt["p_w_disp"] * scale
                 
                 svg += f'<rect x="{rect_x}" y="{rect_y}" width="{draw_w}" height="{draw_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
                 
-                # แสดงข้อความระบุจำนวนที่ซ้อนในช่องย่อย (ถ้ามี)
                 mid_x = rect_x + (draw_w / 2)
                 mid_y = rect_y + (draw_h / 2)
                 if slot["stack_count"] > 1:
-                    svg += f'<text x="{mid_x}" y="{mid_y + 4}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">x{slot["stack_count"]} Stack</text>'
+                    svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold" fill="#7c2d12" text-anchor="middle">x{slot["stack_count"]} Stack</text>'
                 else:
-                    svg += f'<text x="{mid_x}" y="{mid_y + 4}" font-family="system-ui, sans-serif" font-size="8" fill="#c2410c" text-anchor="middle">PCBA</text>'
+                    svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
+                    svg += f'<text x="{mid_x}" y="{mid_y + 8}" font-family="system-ui, sans-serif" font-size="7.5" fill="#ea580c" text-anchor="middle">{int(opt["p_w_disp"])}x{int(opt["p_l_disp"])}</text>'
+
+    # 3. วาดแผ่นพาร์ติชันทับด้านบนสุดเพื่อความชัดเจน (โครงกริดสีแดงหนาเด่นชัด ไม่หาย)
+    for vx in ax:
+        cx = pad_x + (vx * scale)
+        svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+    for vy in ay:
+        cy = pad_y + (vy * scale)
+        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
             
     svg += '</svg>'
     return svg
@@ -246,8 +265,9 @@ def draw_side_view_svg(opt):
     
     svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW (แสดงมิติซ้อนและเบียดแนวดิ่ง)</text>'
+    svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
     
+    # 1. สร้างโครงสร้างชั้น
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{level_y_start}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
@@ -257,15 +277,15 @@ def draw_side_view_svg(opt):
             cx = pad_x + (vx * scale_x)
             svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="3" />'
 
+    # 2. จำลองตำแหน่งชิ้นงานจัดกึ่งกลางในแต่ละช่องสล็อตย่อย
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
-        
         x_bounds = opt["ax"]
+        
         if len(x_bounds) >= 2:
             for b_idx in range(len(x_bounds)-1):
                 slot_w = x_bounds[b_idx+1] - x_bounds[b_idx]
                 
-                # ดึงข้อมูลจากสล็อตจับคู่
                 target_slot = None
                 for vs in opt["valid_slots"]:
                     if vs["col_idx"] == b_idx:
@@ -273,28 +293,34 @@ def draw_side_view_svg(opt):
                         break
                 
                 if target_slot:
-                    # วาดโมเดลผลิตภัณฑ์ซ้อนตามความสูงจริง (stack_count)
+                    group_w = target_slot["w_count"] * opt["target_l"]
+                    start_offset_x = x_bounds[b_idx] + (slot_w - group_w) / 2
+                    
                     for st_idx in range(target_slot["stack_count"]):
                         rect_y = level_y_start - ((st_idx + 1) * prod_h)
                         
-                        # วาดกล่องย่อยภายในที่เรียงแถวแนวราบตัดผ่านสายตา
                         for wc in range(target_slot["w_count"]):
                             w_draw = opt["p_l_disp"] * scale_x
-                            sub_x_start = x_bounds[b_idx] + (wc * opt["target_l"]) + (slot_w - (target_slot["w_count"] * opt["target_l"]))/2
-                            rect_x = pad_x + (sub_x_start * scale_x)
+                            item_x = start_offset_x + (wc * opt["target_l"]) + (opt["target_l"] - opt["p_l_disp"])/2
+                            rect_x = pad_x + (item_x * scale_x)
                             
                             svg += f'<rect x="{rect_x}" y="{rect_y}" width="{w_draw}" height="{prod_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="2" />'
                     
-                    # บอกขนาดความสูง Gap ด้านบนสุดหลังจากการซ้อนชั้นเสร็จสิ้น
+                    # วาดเส้นสัดส่วน Gap ของการซ้อนในช่องย่อย
                     total_stacked_h = target_slot["stack_count"] * prod_h
                     top_gap = opt["part_height"] - (target_slot["stack_count"] * opt["p_h_disp"])
                     if top_gap > 0:
-                        gap_line_x = pad_x + (x_bounds[b_idx+1] * scale_x) - 15
-                        svg += f'<line x1="{gap_line_x}" y1="{level_y_start - total_stacked_h}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2,2" />'
-                        svg += f'<text x="{gap_line_x - 5}" y="{level_y_start - total_stacked_h - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#2563eb" text-anchor="end">Gap: {int(top_gap)} mm</text>'
+                        gap_line_x = pad_x + (x_bounds[b_idx+1] * scale_x) - 10
+                        svg += f'<line x1="{gap_line_x}" y1="{level_y_start - total_stacked_h}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="2,2" />'
+                        svg += f'<text x="{gap_line_x - 4}" y="{level_y_start - total_stacked_h - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#2563eb" text-anchor="end">Gap: {int(top_gap)} mm</text>'
 
     top_pad_y = pad_y + box_h - (opt["layers"] * (part_h + pad_thickness)) - pad_thickness
     svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{top_pad_y}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
+    
+    remaining_box_air_gap = CARTON_H - ((opt["part_height"] + 3.0) * opt["layers"] + 3.0)
+    if remaining_box_air_gap > 0:
+        svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{pad_y}" width="{(584.0)*scale_x}" height="{remaining_box_air_gap * scale_y}" fill="#f1f5f9" opacity="0.6" stroke="#babfc7" stroke-dasharray="4,4"/>'
+    
     svg += '</svg>'
     return svg
 
@@ -308,11 +334,11 @@ def render_packing_list(opt):
         {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น"},
         {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
         {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{layers_count + 1} Pcs", "spec": "394 x 574 mm"},
-        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": f"ความจุสล็อตรวม {opt['qty_box']} ชิ้นงานต่อกล่องมาสเตอร์"}
+        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": f"ความจุรวมโมเดลจัดเรียง {opt['qty_box']} ชิ้นงานต่อกล่องมาสเตอร์"}
     ]
     for item in bom_items:
         st.markdown(f"""
-        <div style="background-color: #f8fafc; border-left: 6px solid #1e293b; padding: 10px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+        <div style="background-color: #f8fafc; border-left: 6px solid #1e293b; padding: 10px; border-radius: 6px; margin-bottom: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div>
                     <div style="font-weight: bold; font-size: 14px; color: #0f172a;">{item['name']}</div>
@@ -388,4 +414,4 @@ if options:
         })
     st.dataframe(summary_table, use_container_width=True)
 else:
-    st.error("❌ ไม่พบรูปแบบที่เหมาะสม")
+    st.error("❌ ไม่พบรูปแบบพาร์ติชันตามขนาดโครงสร้างคงที่ที่ป้อนได้ กรุณาปรับมิติชิ้นงานหรือค่าเผื่อสล็อตให้เหมาะสม")
