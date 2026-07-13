@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
-st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View")
+st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
 
 # --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษ) ---
 CARTON_L = 592.0
@@ -29,8 +29,18 @@ p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Heigh
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
 clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 5.0, step=0.5)
 
+st.sidebar.header("🔄 3. เงื่อนไขจำนวนชิ้นงานต่อช่อง (Slot Capacity)")
+packing_mode = st.sidebar.radio(
+    "รูปแบบความจุผลิตภัณฑ์ต่อ 1 ช่องสล็อต:",
+    options=[
+        "1) วาง 1 ชิ้นต่อช่องปกติ (Standard 1 PC/Slot)",
+        "2) วางข้างกัน/เบียดกันแนวราบ (Multi-Fit: Side-by-Side)",
+        "3) วางข้างกันและสามารถวางทับกันได้ (Stack-Fit: Side-by-Side & Stacked)"
+    ]
+)
+
 # --- DYNAMIC SOLVER ENGINE ---
-def find_asymmetric_optimal_layout(pw, pl, ph):
+def find_asymmetric_optimal_layout(pw, pl, ph, mode):
     all_dims = [pw, pl, ph]
     unique_orientations = set(itertools.permutations(all_dims))
     
@@ -92,28 +102,56 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
                 y_bounds = sorted(ay)
 
                 valid_slots = []
+                qty_layer_total = 0
+                
                 for i in range(len(x_bounds) - 1):
                     for j in range(len(y_bounds) - 1):
-                        slot_w = x_bounds[i+1] - x_bounds[i]
-                        slot_h = y_bounds[j+1] - y_bounds[j]
+                        slot_w_size = x_bounds[i+1] - x_bounds[i]
+                        slot_h_size = y_bounds[j+1] - y_bounds[j]
 
-                        if slot_w >= target_l and slot_h >= target_w:
+                        # ตรวจสอบเบื้องต้นว่าขนาดช่องใหญ่พอที่จะใส่ได้อย่างน้อย 1 ชิ้นหรือไม่
+                        if slot_w_size >= target_l and slot_h_size >= target_w:
+                            # ลอจิกการคำนวณจำนวนชิ้นภายในสล็อตเดียว (Multi-Fit Logic)
+                            if "Standard 1 PC/Slot" in mode:
+                                qty_in_slot_x = 1
+                                qty_in_slot_y = 1
+                                qty_in_slot_z = 1
+                            else:
+                                # คำนวณในแนวราบ (ตามความกว้างยาวของช่องเทียบกับขนาดชิ้นงานรวม clearance)
+                                qty_in_slot_x = max(1, int(slot_w_size // target_l))
+                                qty_in_slot_y = max(1, int(slot_h_size // target_w))
+                                
+                                # คำนวณในแนวตั้ง (ซ้อนทับกันได้)
+                                if "Stack-Fit" in mode:
+                                    qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
+                                else:
+                                    qty_in_slot_z = 1
+                            
+                            pcs_in_this_slot = qty_in_slot_x * qty_in_slot_y * qty_in_slot_z
+                            qty_layer_total += (qty_in_slot_x * qty_in_slot_y) # นับจำนวนชิ้นในมุมมองแปลน (Top View)
+                            
                             valid_slots.append({
                                 "col_idx": i,
                                 "row_idx": j,
                                 "x_start": x_bounds[i],
                                 "x_end": x_bounds[i+1],
                                 "y_start": y_bounds[j],
-                                "y_end": y_bounds[j+1]
+                                "y_end": y_bounds[j+1],
+                                "qty_x": qty_in_slot_x,
+                                "qty_y": qty_in_slot_y,
+                                "qty_z": qty_in_slot_z,
+                                "pcs_per_slot": pcs_in_this_slot
                             })
 
                 if len(valid_slots) > 0:
-                    qty_layer = len(valid_slots)
-                    qty_box = qty_layer * layers
+                    # คำนวณจำนวนชิ้นงานทั้งหมดต่อชั้น และต่อกล่อง
+                    total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
+                    total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
+                    qty_box = total_pcs_in_slot_all * layers
 
                     best_options.append({
                         "qty_box": qty_box,
-                        "qty_layer": qty_layer,
+                        "qty_layer": total_pcs_in_layer,
                         "layers": layers,
                         "part_height": part_height,
                         "ax": ax,
@@ -133,7 +171,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph):
 
     return best_options
 
-options = find_asymmetric_optimal_layout(p_w, p_l, p_h)
+options = find_asymmetric_optimal_layout(p_w, p_l, p_h, packing_mode)
 
 # --- SVG TOP VIEW RENDERER ---
 def draw_asymmetric_svg(opt):
@@ -172,22 +210,34 @@ def draw_asymmetric_svg(opt):
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
-        mid_x = pad_x + ((slot["x_start"] + slot_w/2) * scale)
-        mid_y = pad_y + ((slot["y_start"] + slot_h/2) * scale)
         
+        # มิติวาดชิ้นงานเดี่ยว
         draw_w = opt["p_l_disp"] * scale
         draw_h = opt["p_w_disp"] * scale
-        rect_x = mid_x - (draw_w / 2)
-        rect_y = mid_y - (draw_h / 2)
         
-        svg += f'<rect x="{rect_x}" y="{rect_y}" width="{draw_w}" height="{draw_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="4" />'
-        svg += f'<text x="{mid_x}" y="{mid_y - 2}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#7c2d12" text-anchor="middle">PCBA</text>'
-        svg += f'<text x="{mid_x}" y="{mid_y + 11}" font-family="system-ui, sans-serif" font-size="9.5" fill="#ea580c" text-anchor="middle">{int(opt["p_w_disp"])}x{int(opt["p_l_disp"])}</text>'
-            
+        # วาดชิ้นงานตามจำนวนแถวและคอลัมน์ที่คำนวณได้ภายในช่องสล็อตเดียว (จัดตำแหน่งให้อยู่ตรงกลางสล็อตพอดี)
+        start_x_in_slot = pad_x + (slot["x_start"] * scale) + ((slot_w * scale) - (slot["qty_x"] * draw_w)) / 2
+        start_y_in_slot = pad_y + (slot["y_start"] * scale) + ((slot_h * scale) - (slot["qty_y"] * draw_h)) / 2
+        
+        for kx in range(slot["qty_x"]):
+            for ky in range(slot["qty_y"]):
+                rect_x = start_x_in_slot + (kx * draw_w)
+                rect_y = start_y_in_slot + (ky * draw_h)
+                
+                mid_x = rect_x + (draw_w / 2)
+                mid_y = rect_y + (draw_h / 2)
+                
+                svg += f'<rect x="{rect_x + 1}" y="{rect_y + 1}" width="{draw_w - 2}" height="{draw_h - 2}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
+                
+                # แสดงตัวหนังสือระบุเฉพาะสล็อตที่ชิ้นงานไม่เบียดกันเกินไป หรือชิ้นแรกเพื่อความสะอาดของแบบ
+                if slot["qty_x"] * slot["qty_y"] <= 2 or (kx == 0 and ky == 0):
+                    text_label = "PCBA" if slot["qty_z"] == 1 else f"PCBA x{slot['qty_z']}"
+                    svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">{text_label}</text>'
+                    
     svg += '</svg>'
     return svg
 
-# --- SVG SIDE VIEW RENDERER (ฟังก์ชันใหม่ตอบโจทย์ MANAGER) ---
+# --- SVG SIDE VIEW RENDERER ---
 def draw_side_view_svg(opt):
     scale_x = 1.4  # อิงตามความยาวกล่อง L
     scale_y = 1.8  # ขยายแกนตั้ง Y ให้เห็นระดับความสูงชัดเจนขึ้น
@@ -211,8 +261,6 @@ def draw_side_view_svg(opt):
     
     # 2. คำนวณวาดพาร์ติชันและชิ้นงานตามจำนวนชั้น (Layers)
     for layer_idx in range(opt["layers"]):
-        # คำนวณระดับพื้นของชั้นนั้นๆ (อิงจากก้นกล่องขึ้นมา)
-        # ชั้นล่างสุดเริ่มจากก้นกล่อง (Y สูงสุดในพิกัด SVG คือด้านล่าง)
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
         # วาดแผ่นกระดาษลูกฟูกรองชั้น (Paper Pad)
@@ -227,34 +275,50 @@ def draw_side_view_svg(opt):
             cx = pad_x + (vx * scale_x)
             svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="3" />'
             
-    # วาดตัวแทนชิ้นงาน PCBA จัดวางในตู้เพื่อแสดงระยะ Gap ด้านบน (จำลองในช่องกั้นหลัก)
+    # วาดตัวแทนชิ้นงาน PCBA จัดวางเพื่อแสดงระดับการบรรจุและช่องว่าง
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
-        # วาดตัวชิ้นงาน (สีส้ม ESD) วางอยู่บน Pad 
-        rect_y = level_y_start - prod_h
-        
-        # วาดชิ้นงานจำลองตามช่วงช่องสล็อตที่ถูกสร้างขึ้น
         x_bounds = opt["ax"]
         if len(x_bounds) >= 2:
             for b_idx in range(len(x_bounds)-1):
                 slot_w = x_bounds[b_idx+1] - x_bounds[b_idx]
-                # วาดเฉพาะช่องที่ชิ้นงานลงได้จริง
-                if slot_w >= opt["target_l"]:
+                
+                # ดึงคุณสมบัติการบรรจุในช่องสล็อตนี้มาประยุกต์วาดภาพภาคตัดขวาง
+                matching_slot = next((s for s in opt["valid_slots"] if s["col_idx"] == b_idx), None)
+                
+                if matching_slot:
+                    qty_x = matching_slot["qty_x"]
+                    qty_z = matching_slot["qty_z"]
+                    
                     w_draw = opt["p_l_disp"] * scale_x
                     mid_slot_x = pad_x + ((x_bounds[b_idx] + slot_w/2) * scale_x)
-                    rect_x = mid_slot_x - (w_draw / 2)
                     
-                    # ตัวผลิตภัณฑ์
-                    svg += f'<rect x="{rect_x}" y="{rect_y}" width="{w_draw}" height="{prod_h}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5" rx="3" />'
-                    svg += f'<text x="{mid_slot_x}" y="{rect_y + prod_h/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#7c2d12" text-anchor="middle">H: {int(opt["p_h_disp"])}</text>'
+                    # ค้นหาพิกัดเริ่มต้นการวาดชิ้นงานตามแกน X ในสล็อตนี้
+                    start_x_in_slot = mid_slot_x - ((qty_x * w_draw) / 2)
                     
-                    # คำนวณและวาดเส้นมิติตัวชี้วัด Top Gap พื้นที่ว่างด้านบนชิ้นงาน
-                    top_gap = opt["part_height"] - opt["p_h_disp"]
-                    if top_gap > 0:
-                        gap_line_x = mid_slot_x + (w_draw/2) + 8
-                        svg += f'<line x1="{gap_line_x}" y1="{rect_y}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2,2" />'
-                        svg += f'<text x="{gap_line_x + 5}" y="{rect_y - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#2563eb">Gap: {int(top_gap)} mm</text>'
+                    for kx in range(qty_x):
+                        rect_x = start_x_in_slot + (kx * w_draw)
+                        
+                        # วาดกล่องผลิตภัณฑ์ซ้อนทับกันในแนวตั้งตามจำนวนที่ระบุ (Stacking)
+                        for kz in range(qty_z):
+                            rect_y = level_y_start - (prod_h * (kz + 1))
+                            
+                            svg += f'<rect x="{rect_x + 1}" y="{rect_y + 1}" width="{w_draw - 2}" height="{prod_h - 2}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
+                            
+                            if kz == qty_z - 1 and kx == 0:
+                                # แสดงข้อความสถิติรวมความสูงเฉพาะกล่องชิ้นงานบนสุดเพื่อไม่ให้บดบังแบบ
+                                total_prod_h_mm = opt["p_h_disp"] * qty_z
+                                svg += f'<text x="{rect_x + w_draw/2}" y="{rect_y + prod_h/2 + 4}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">H: {int(total_prod_h_mm)} (x{qty_z})</text>'
+                    
+                    # คำนวณและวาดเส้นมิติตัวชี้วัด Top Gap พื้นที่ว่างที่เหลืออยู่ด้านบนสุดของชิ้นงานในสล็อต
+                    total_h_stacked = opt["p_h_disp"] * qty_z
+                    top_gap = opt["part_height"] - total_h_stacked
+                    if top_gap > 0 and b_idx == len(x_bounds) - 2:
+                        top_rect_y = level_y_start - (prod_h * qty_z)
+                        gap_line_x = mid_slot_x + ((qty_x * w_draw)/2) + 8
+                        svg += f'<line x1="{gap_line_x}" y1="{top_rect_y}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2,2" />'
+                        svg += f'<text x="{gap_line_x + 5}" y="{top_rect_y - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#2563eb">Gap: {int(top_gap)} mm</text>'
 
     # วาดแผ่นปิดด้านบนสุดปิดกล่อง (Top Pad)
     top_pad_y = pad_y + box_h - (opt["layers"] * (part_h + pad_thickness)) - pad_thickness
@@ -318,7 +382,7 @@ if options:
             st.success(f"📌 **ทิศทางการจัดวาง:** {best_fixed['orient_label']}")
             
             m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("จำนวนสินค้า/ชั้น", f"{best_fixed['qty_layer']} Pcs")
+            m_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_fixed['qty_layer']} Pcs")
             m_col2.metric("จำนวนชั้น (Layers)", f"{best_fixed['layers']} ชั้น")
             m_col3.metric("ความจุรวม/กล่อง", f"{best_fixed['qty_box']} Pcs/Box")
             
@@ -340,7 +404,7 @@ if options:
             st.warning(f"🔥 **แนะนำเปลี่ยนทิศทางการวางเป็น:** {best_overall['orient_label']}")
             
             a_col1, a_col2, a_col3 = st.columns(3)
-            a_col1.metric("จำนวนสินค้า/ชั้น", f"{best_overall['qty_layer']} Pcs", f"+{best_overall['qty_layer'] - best_fixed['qty_layer']} Pcs")
+            a_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_overall['qty_layer']} Pcs", f"+{best_overall['qty_layer'] - best_fixed['qty_layer']} Pcs")
             a_col2.metric("จำนวนชั้น (Layers)", f"{best_overall['layers']} ชั้น")
             a_col3.metric("ความจุรวม/กล่อง", f"{best_overall['qty_box']} Pcs/Box", f"+{best_overall['qty_box'] - best_fixed['qty_box']} Pcs")
             
@@ -358,7 +422,7 @@ if options:
             <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 20px; border-radius: 12px; margin-top: 10px;">
                 <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
                 <p style="color: #166534; font-size: 15px; line-height: 1.6;">
-                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้กำลังความจุรวมต่อกล่องสูงที่สุดแล้ว
+                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้กำลังความจุรวมต่อกล่องสูงที่สุดแล้วภายใต้เงื่อนไขบรรจุภัณฑ์ปัจจุบัน
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -366,7 +430,10 @@ if options:
             if best_fixed:
                 st.subheader("📊 รายละเอียดสรุปโครงสร้างปัจจุบัน")
                 st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
-                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - best_fixed['p_h_disp'])} mm")
+                # คำนวณระยะห่างเผื่อจากสินค้าแถวบนสุดถึงขอบแผ่นกั้น
+                example_slot = best_fixed['valid_slots'][0]
+                total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
+                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
                 st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
 
     # แสดงรายการตารางเปรียบเทียบ Grid Layout ทั้งหมดด้านล่าง
@@ -381,9 +448,9 @@ if options:
             "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
             "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
             "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
-            "ความจุต่อชั้น (Layer Qty)": f"{opt['qty_layer']} Pcs",
+            "ความจุรวมในแปลน/ชั้น (Layer Pcs)": f"{opt['qty_layer']} Pcs",
             "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
-            "ความจุรวมกล่อง (Box Qty)": f"{opt['qty_box']} Pcs/Box"
+            "ความจุรวมกล่องหลังจากทับ/เบียด (Box Qty)": f"{opt['qty_box']} Pcs/Box"
         })
     st.dataframe(summary_table, use_container_width=True)
 
