@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
-st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
+st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง (Logic Fixed)")
 
 # --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษ) ---
 CARTON_L = 592.0
@@ -109,7 +109,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         slot_w_size = x_bounds[i+1] - x_bounds[i]
                         slot_h_size = y_bounds[j+1] - y_bounds[j]
 
-                        # ตรวจสอบเบื้องต้นว่าขนาดช่องใหญ่พอที่จะใส่ได้อย่างน้อย 1 ชิ้นหรือไม่
+                        # ตรวจสอบเบื้องต้นว่าขนาดช่องใหญ่พอที่จะใส่ได้อย่างน้อย 1 ชิ้นหรือไม่ (Fix โครงสร้างตาราง)
                         if slot_w_size >= target_l and slot_h_size >= target_w:
                             # ลอจิกการคำนวณจำนวนชิ้นภายในสล็อตเดียว (Multi-Fit Logic)
                             if "Standard 1 PC/Slot" in mode:
@@ -117,13 +117,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                                 qty_in_slot_y = 1
                                 qty_in_slot_z = 1
                             else:
-                                # คำนวณในแนวราบ (ตามความกว้างยาวของช่องเทียบกับขนาดชิ้นงานรวม clearance)
-                                qty_in_slot_x = max(1, int(slot_w_size // target_l))
-                                qty_in_slot_y = max(1, int(slot_h_size // target_w))
+                                # คำนวณในแนวราบ: นำพื้นที่สล็อตมาหารด้วยขนาดชิ้นงานจริง (el, ew) เพื่อให้เบียดกันได้สูงสุด
+                                qty_in_slot_x = max(1, int(slot_w_size // el))
+                                qty_in_slot_y = max(1, int(slot_h_size // ew))
                                 
-                                # คำนวณในแนวตั้ง (ซ้อนทับกันได้)
+                                # คำนวณในแนวตั้ง (ซ้อนทับกันได้) โดยใช้ความหนาชิ้นงานจริง (eh)
                                 if "Stack-Fit" in mode:
-                                    qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
+                                    qty_in_slot_z = max(1, int(part_height // eh))
                                 else:
                                     qty_in_slot_z = 1
                             
@@ -148,8 +148,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                     total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
+                    
+                    # 💡 หัวใจสำคัญของการแก้ Logic: เก็บจำนวนสล็อตมาตรฐานเพื่อบังคับโครงสร้างตาราง
+                    std_slots_count = len(valid_slots)
+                    std_qty_box = std_slots_count * layers
 
                     best_options.append({
+                        "std_qty_box": std_qty_box, # ตัวแปรใหม่สำหรับจัดอันดับโครงสร้างตาราง
                         "qty_box": qty_box,
                         "qty_layer": total_pcs_in_layer,
                         "layers": layers,
@@ -363,10 +368,11 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
+    # 💡 จุดแก้ไขการจัดอันดับ: จัดเรียงโดยให้ความสำคัญกับ `std_qty_box` (จำนวนสล็อตพาร์ติชัน) เป็นอันดับแรกสุด!
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
+    fixed_h_options.sort(key=lambda x: (x["std_qty_box"], x["qty_box"], -x["total_dividers"]), reverse=True)
     
-    overall_options = sorted(options, key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
+    overall_options = sorted(options, key=lambda x: (x["std_qty_box"], x["qty_box"], -x["total_dividers"]), reverse=True)
     
     best_fixed = fixed_h_options[0] if fixed_h_options else None
     best_overall = overall_options[0] if overall_options else None
