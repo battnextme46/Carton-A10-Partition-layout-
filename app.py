@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
-st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง (Logic Fixed)")
+st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
 
 # --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษ) ---
 CARTON_L = 592.0
@@ -84,17 +84,19 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        if eh + clearance <= 111.0:
+        # 🔥 แก้ไขจุดที่ 1: ปรับเพิ่มเป็น 2 * clearance เพื่อให้ห่อหุ้มรอบตัวผลิตภัณฑ์ทั้ง 2 ด้านอย่างสมบูรณ์
+        target_w = ew + (2 * clearance)
+        target_l = el + (2 * clearance)
+        target_h = eh + (2 * clearance)
+
+        if target_h <= 111.0:
             part_height = 111.0
             layers = 2
-        elif eh + clearance <= 225.0:
+        elif target_h <= 225.0:
             part_height = 225.0
             layers = 1
         else:
             continue
-
-        target_w = ew + clearance
-        target_l = el + clearance
 
         for ax in subsets_x:
             for ay in unique_subsets_y:
@@ -109,7 +111,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         slot_w_size = x_bounds[i+1] - x_bounds[i]
                         slot_h_size = y_bounds[j+1] - y_bounds[j]
 
-                        # ตรวจสอบเบื้องต้นว่าขนาดช่องใหญ่พอที่จะใส่ได้อย่างน้อย 1 ชิ้นหรือไม่ (Fix โครงสร้างตาราง)
+                        # ตรวจสอบเบื้องต้นว่าขนาดช่องใหญ่พอที่จะใส่ได้อย่างน้อย 1 ชิ้นหรือไม่
                         if slot_w_size >= target_l and slot_h_size >= target_w:
                             # ลอจิกการคำนวณจำนวนชิ้นภายในสล็อตเดียว (Multi-Fit Logic)
                             if "Standard 1 PC/Slot" in mode:
@@ -117,13 +119,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                                 qty_in_slot_y = 1
                                 qty_in_slot_z = 1
                             else:
-                                # คำนวณในแนวราบ: นำพื้นที่สล็อตมาหารด้วยขนาดชิ้นงานจริง (el, ew) เพื่อให้เบียดกันได้สูงสุด
-                                qty_in_slot_x = max(1, int(slot_w_size // el))
-                                qty_in_slot_y = max(1, int(slot_h_size // ew))
+                                # คำนวณในแนวราบ (ตามความกว้างยาวของช่องเทียบกับขนาดชิ้นงานรวม air bubble รอบตัว)
+                                qty_in_slot_x = max(1, int(slot_w_size // target_l))
+                                qty_in_slot_y = max(1, int(slot_h_size // target_w))
                                 
-                                # คำนวณในแนวตั้ง (ซ้อนทับกันได้) โดยใช้ความหนาชิ้นงานจริง (eh)
+                                # คำนวณในแนวตั้ง (ซ้อนทับกันได้)
                                 if "Stack-Fit" in mode:
-                                    qty_in_slot_z = max(1, int(part_height // eh))
+                                    qty_in_slot_z = max(1, int(part_height // target_h))
                                 else:
                                     qty_in_slot_z = 1
                             
@@ -148,13 +150,8 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                     total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
-                    
-                    # 💡 หัวใจสำคัญของการแก้ Logic: เก็บจำนวนสล็อตมาตรฐานเพื่อบังคับโครงสร้างตาราง
-                    std_slots_count = len(valid_slots)
-                    std_qty_box = std_slots_count * layers
 
                     best_options.append({
-                        "std_qty_box": std_qty_box, # ตัวแปรใหม่สำหรับจัดอันดับโครงสร้างตาราง
                         "qty_box": qty_box,
                         "qty_layer": total_pcs_in_layer,
                         "layers": layers,
@@ -167,6 +164,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         "orient_label": orient["label"],
                         "target_w": target_w,
                         "target_l": target_l,
+                        "target_h": target_h,
                         "p_w_disp": ew,
                         "p_l_disp": el,
                         "p_h_disp": eh,
@@ -236,7 +234,8 @@ def draw_asymmetric_svg(opt):
                 
                 # แสดงตัวหนังสือระบุเฉพาะสล็อตที่ชิ้นงานไม่เบียดกันเกินไป หรือชิ้นแรกเพื่อความสะอาดของแบบ
                 if slot["qty_x"] * slot["qty_y"] <= 2 or (kx == 0 and ky == 0):
-                    text_label = "PCBA" if slot["qty_z"] == 1 else f"PCBA x{slot['qty_z']}"
+                    # 🔥 แก้ไขจุดที่ 2: เปลี่ยนคำว่า PCBA เป็น Product
+                    text_label = "Product" if slot["qty_z"] == 1 else f"Product x{slot['qty_z']}"
                     svg += f'<text x="{mid_x}" y="{mid_y + 3}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">{text_label}</text>'
                     
     svg += '</svg>'
@@ -261,7 +260,7 @@ def draw_side_view_svg(opt):
     svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
     
     # 1. วาดเส้นขอบนอก/ใน กล่อง Carton A10 (Side Profile)
-    svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
+    svg += f'<rect x="{pad_x}" y="{box_h + pad_y - box_h}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
     
     # 2. คำนวณวาดพาร์ติชันและชิ้นงานตามจำนวนชั้น (Layers)
@@ -280,7 +279,7 @@ def draw_side_view_svg(opt):
             cx = pad_x + (vx * scale_x)
             svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="3" />'
             
-    # วาดตัวแทนชิ้นงาน PCBA จัดวางเพื่อแสดงระดับการบรรจุและช่องว่าง
+    # วาดตัวแทนชิ้นงาน Product จัดวางเพื่อแสดงระดับการบรรจุและช่องว่าง
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
@@ -350,7 +349,8 @@ def render_packing_list(opt):
         {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น"},
         {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
         {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
-        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
+        # 🔥 แก้ไขจุดที่ 2: เปลี่ยนคำว่า PCBA เป็น Product
+        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ Product ก่อนนำมาบรรจุลงช่องสล็อต"}
     ]
     
     for item in bom_items:
@@ -368,11 +368,10 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
-    # 💡 จุดแก้ไขการจัดอันดับ: จัดเรียงโดยให้ความสำคัญกับ `std_qty_box` (จำนวนสล็อตพาร์ติชัน) เป็นอันดับแรกสุด!
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["std_qty_box"], x["qty_box"], -x["total_dividers"]), reverse=True)
+    fixed_h_options.sort(key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
     
-    overall_options = sorted(options, key=lambda x: (x["std_qty_box"], x["qty_box"], -x["total_dividers"]), reverse=True)
+    overall_options = sorted(options, key=lambda x: (x["qty_box"], -x["total_dividers"]), reverse=True)
     
     best_fixed = fixed_h_options[0] if fixed_h_options else None
     best_overall = overall_options[0] if overall_options else None
@@ -438,8 +437,7 @@ if options:
                 st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
                 # คำนวณระยะห่างเผื่อจากสินค้าแถวบนสุดถึงขอบแผ่นกั้น
                 example_slot = best_fixed['valid_slots'][0]
-                total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
-                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
+                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - best_fixed['target_h'])} mm")
                 st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
 
     # แสดงรายการตารางเปรียบเทียบ Grid Layout ทั้งหมดด้านล่าง
