@@ -17,8 +17,30 @@ CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-GROOVE_X_ALL = [13.5, 154.75, 296.0, 437.25, 578.5]
-GROOVE_Y_ALL = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# 1. พิกัดร่องขัดสำหรับพาร์ติชันสูง 111 mm
+GROOVE_X_111 = [13.5, 154.75, 296.0, 437.25, 578.5]
+GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+
+# 2. พิกัดร่องขัดสำหรับพาร์ติชันสูง 225 mm (UPDATE ตามสเปกจริง)
+# Long Partition (584mm): เริ่มที่ 4.0, ร่องแรก 40, ระยะห่าง 120
+GROOVE_X_225 = [4.0 + 40.0 + (i * 120.0) for i in range(5)]  # จะได้ [44.0, 164.0, 284.0, 404.0, 524.0]
+# Short Partition (393mm): เริ่มที่ 5.5, ร่องแรก 14, ระยะห่าง 40
+GROOVE_Y_225 = [5.5 + 14.0 + (i * 40.0) for i in range(10)] # จะได้ [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
+
+# ฟังก์ชันสำหรับเตรียม Subsets ทั้งหมดล่วงหน้าเพื่อลดภาระการประมวลผล
+def generate_subsets(grooves):
+    inner = grooves[1:-1]
+    subsets = []
+    for r in range(0, len(inner) + 1):
+        for comb in itertools.combinations(inner, r):
+            subsets.append([grooves[0]] + list(comb) + [grooves[-1]])
+    return subsets
+
+SUBSETS_X_111 = generate_subsets(GROOVE_X_111)
+SUBSETS_Y_111 = generate_subsets(GROOVE_Y_111)
+SUBSETS_X_225 = generate_subsets(GROOVE_X_225)
+SUBSETS_Y_225 = generate_subsets(GROOVE_Y_225)
+
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
@@ -58,44 +80,22 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
 
     best_options = []
 
-    # บังคับให้โครงสร้างต้องมีร่องแรกและร่องสุดท้ายเสมอ (สร้างกรอบ Outer Bound)
-    subsets_x = []
-    inner_x = GROOVE_X_ALL[1:-1]
-    for r in range(0, len(inner_x) + 1):
-        for comb in itertools.combinations(inner_x, r):
-            subsets_x.append([GROOVE_X_ALL[0]] + list(comb) + [GROOVE_X_ALL[-1]])
-
-    subsets_y = []
-    inner_y = GROOVE_Y_ALL[1:-1]
-    for r in range(0, len(inner_y) + 1):
-        for comb in itertools.combinations(inner_y, r):
-            subsets_y.append([GROOVE_Y_ALL[0]] + list(comb) + [GROOVE_Y_ALL[-1]])
-            
-    unique_subsets_y = []
-    y_presets = [
-        GROOVE_Y_ALL, 
-        [19.5, 110.75, 202.0, 293.25, 384.5], 
-        [19.5, 202.0, 384.5], 
-    ]
-    for s in y_presets + subsets_y:
-        s_sorted = sorted(s)
-        if s_sorted[0] != GROOVE_Y_ALL[0]: s_sorted.insert(0, GROOVE_Y_ALL[0])
-        if s_sorted[-1] != GROOVE_Y_ALL[-1]: s_sorted.append(GROOVE_Y_ALL[-1])
-        s_sorted = sorted(list(set(s_sorted)))
-        if s_sorted not in unique_subsets_y:
-            unique_subsets_y.append(s_sorted)
-
     for orient in orientations_3d:
         ew = orient["flat_w"]
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
+        # เลือก Grid ร่องขัดและ Subsets ตามความสูงของพาร์ติชัน
         if eh + clearance <= 111.0:
             part_height = 111.0
             layers = 2
+            gx_all, gy_all = GROOVE_X_111, GROOVE_Y_111
+            subsets_x, subsets_y = SUBSETS_X_111, SUBSETS_Y_111
         elif eh + clearance <= 225.0:
             part_height = 225.0
             layers = 1
+            gx_all, gy_all = GROOVE_X_225, GROOVE_Y_225
+            subsets_x, subsets_y = SUBSETS_X_225, SUBSETS_Y_225
         else:
             continue
 
@@ -103,7 +103,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         target_l = el + clearance
 
         for ax in subsets_x:
-            for ay in unique_subsets_y:
+            for ay in subsets_y:
                 x_bounds = sorted(ax)
                 y_bounds = sorted(ay)
 
@@ -150,17 +150,18 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
                     
-                    # [🔥 NEW FIX] สร้าง base_qty_box จำลองโครงสร้างจำนวนช่อง 1 ชิ้น/ช่อง เพื่อรักษาโครงสร้างพาร์ติชัน
                     base_qty_box = len(valid_slots) * layers 
 
                     best_options.append({
                         "qty_box": qty_box,
-                        "base_qty_box": base_qty_box, # <--- เพิ่มตัวแปรนี้
+                        "base_qty_box": base_qty_box,
                         "qty_layer": total_pcs_in_layer,
                         "layers": layers,
                         "part_height": part_height,
                         "ax": ax,
                         "ay": ay,
+                        "gx_all": gx_all, # แนบกริดที่ใช้กลับไปแสดงผล
+                        "gy_all": gy_all, # แนบกริดที่ใช้กลับไปแสดงผล
                         "x_bounds": [4.0] + ax + [588.0],
                         "y_bounds": [5.5] + ay + [398.5],
                         "valid_slots": valid_slots,
@@ -185,6 +186,8 @@ def draw_asymmetric_svg(opt):
     ax = opt["ax"]
     ay = opt["ay"]
     valid_slots = opt["valid_slots"]
+    gx_all = opt["gx_all"]
+    gy_all = opt["gy_all"]
     
     scale = 1.4
     pad_x = 60
@@ -198,10 +201,10 @@ def draw_asymmetric_svg(opt):
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    for sx in GROOVE_X_ALL:
+    for sx in gx_all:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
-    for sy in GROOVE_Y_ALL:
+    for sy in gy_all:
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 584.0)*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
@@ -352,9 +355,6 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
-    # [🔥 FIX 4] เปลี่ยนการเรียงลำดับใหม่ทั้งหมด
-    # บังคับให้ดู `base_qty_box` (จำนวนโครงสร้างช่อง) เป็นอันดับแรก 
-    # เพื่อให้ Grid ภายในเหมือนเงื่อนไขที่ 1 เสมอ ก่อนจะดูปริมาณจุรวม (qty_box)
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
     fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
     
@@ -435,8 +435,8 @@ if options:
             "ทิศทางจัดวาง": opt["orient_label"],
             "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
             "โครงสร้างช่อง (Base Slots)": f"{opt['base_qty_box']} ช่อง",
-            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
-            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
+            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} Pcs",
+            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} Pcs",
             "ความจุรวมในแปลน/ชั้น (Layer Pcs)": f"{opt['qty_layer']} Pcs",
             "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
             "ความจุรวมกล่องหลังจากทับ/เบียด (Box Qty)": f"{opt['qty_box']} Pcs/Box"
