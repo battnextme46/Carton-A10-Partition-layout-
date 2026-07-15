@@ -17,30 +17,30 @@ CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-# 1. พิกัดร่องขัดสำหรับพาร์ติชันสูง 111 mm
-GROOVE_X_111 = [13.5, 154.75, 296.0, 437.25, 578.5]
-GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# 🛠️ [CORRECTION] ปรับพิกัดร่องขัดจริงอ้างอิงจากขอบนอกสุดของกล่อง (Absolute Coordinates)
+# แผ่นยาว (584mm) วางขนานแกน L (เริ่มที่ X=4.0), แผ่นสั้น (393mm) วางขนานแกน W (เริ่มที่ Y=5.5)
 
-# 2. พิกัดร่องขัดสำหรับพาร์ติชันสูง 225 mm (UPDATE ตามสเปกจริง)
-# Long Partition (584mm): เริ่มที่ 4.0, ร่องแรก 40, ระยะห่าง 120
-GROOVE_X_225 = [4.0 + 40.0 + (i * 120.0) for i in range(5)]  # จะได้ [44.0, 164.0, 284.0, 404.0, 524.0]
-# Short Partition (393mm): เริ่มที่ 5.5, ร่องแรก 14, ระยะห่าง 40
-GROOVE_Y_225 = [5.5 + 14.0 + (i * 40.0) for i in range(10)] # จะได้ [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
+# 1. สำหรับพาร์ติชันสูง 111 mm (ขอบยาวร่องห่าง 135mm / ขอบสั้นร่องห่าง 40mm)
+GROOVE_X_111 = [4.0 + 40.0 + (i * 135.0) for i in range(5)]   # [44.0, 179.0, 314.0, 449.0, 584.0]
+GROOVE_Y_111 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]  # [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
 
-# ฟังก์ชันสำหรับเตรียม Subsets ทั้งหมดล่วงหน้าเพื่อลดภาระการประมวลผล
-def generate_subsets(grooves):
-    inner = grooves[1:-1]
+# 2. สำหรับพาร์ติชันสูง 225 mm (ขอบยาวร่องห่าง 120mm / ขอบสั้นร่องห่าง 40mm)
+GROOVE_X_225 = [4.0 + 40.0 + (i * 120.0) for i in range(5)]   # [44.0, 164.0, 284.0, 404.0, 524.0]
+GROOVE_Y_225 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]  # [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
+
+# ฟังก์ชันคำนวณหาเซ็ตการจัดรูปแบบแผ่นพาร์ติชันที่เป็นไปได้แบบไดนามิก (ต้องมีจุดเริ่มและจุดจบเสมอ)
+def generate_dynamic_subsets(grooves):
+    inner_grooves = grooves[1:-1]
     subsets = []
-    for r in range(0, len(inner) + 1):
-        for comb in itertools.combinations(inner, r):
+    for r in range(0, len(inner_grooves) + 1):
+        for comb in itertools.combinations(inner_grooves, r):
             subsets.append([grooves[0]] + list(comb) + [grooves[-1]])
     return subsets
 
-SUBSETS_X_111 = generate_subsets(GROOVE_X_111)
-SUBSETS_Y_111 = generate_subsets(GROOVE_Y_111)
-SUBSETS_X_225 = generate_subsets(GROOVE_X_225)
-SUBSETS_Y_225 = generate_subsets(GROOVE_Y_225)
-
+SUBSETS_X_111 = generate_dynamic_subsets(GROOVE_X_111)
+SUBSETS_Y_111 = generate_dynamic_subsets(GROOVE_Y_111)
+SUBSETS_X_225 = generate_dynamic_subsets(GROOVE_X_225)
+SUBSETS_Y_225 = generate_dynamic_subsets(GROOVE_Y_225)
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
@@ -85,7 +85,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        # เลือก Grid ร่องขัดและ Subsets ตามความสูงของพาร์ติชัน
+        # 🔄 สลับชุดพิกัดร่องขัดและเซ็ตย่อยตามความสูงพาร์ติชันที่เหมาะสมโดยอัตโนมัติ
         if eh + clearance <= 111.0:
             part_height = 111.0
             layers = 2
@@ -160,8 +160,8 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         "part_height": part_height,
                         "ax": ax,
                         "ay": ay,
-                        "gx_all": gx_all, # แนบกริดที่ใช้กลับไปแสดงผล
-                        "gy_all": gy_all, # แนบกริดที่ใช้กลับไปแสดงผล
+                        "gx_all": gx_all,  # บันทึกพิกัดร่องขัดหลักของรุ่นนี้ไว้ใช้วาดภาพกราฟิก
+                        "gy_all": gy_all,  # บันทึกพิกัดร่องขัดหลักของรุ่นนี้ไว้ใช้วาดภาพกราฟิก
                         "x_bounds": [4.0] + ax + [588.0],
                         "y_bounds": [5.5] + ay + [398.5],
                         "valid_slots": valid_slots,
@@ -201,6 +201,7 @@ def draw_asymmetric_svg(opt):
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
+    # วาดกริดร่องขัดมาตรฐานสีเขียว (สลับอัตโนมัติตามระยะของความสูงพาร์ติชันตัวนั้นๆ)
     for sx in gx_all:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
@@ -208,12 +209,13 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 584.0)*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
+    # วาดเส้นพาร์ติชันจริงที่ถูกใช้งานสีแดง
     for vx in ax:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
     for vy in ay:
         cy = pad_y + (vy * scale)
-        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 588.0)*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
