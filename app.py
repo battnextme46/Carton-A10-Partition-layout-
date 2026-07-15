@@ -12,35 +12,26 @@ st.set_page_config(
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
 
-# --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษ) ---
+# --- CONFIGURATION ENGINE (พิกัดกล่องภายใน) ---
 CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-# 🛠️ [CORRECTION] ปรับพิกัดร่องขัดจริงอ้างอิงจากขอบนอกสุดของกล่อง (Absolute Coordinates)
-# แผ่นยาว (584mm) วางขนานแกน L (เริ่มที่ X=4.0), แผ่นสั้น (393mm) วางขนานแกน W (เริ่มที่ Y=5.5)
+# 🛠️ [UPDATE] แยกพิกัดร่องขัดตามความสูงของพาร์ติชัน (อ้างอิงจากแบบ Drawing จริง)
+# แผ่นยาว (584mm) วางเริ่มที่ X=4.0 | แผ่นสั้น (393mm) วางเริ่มที่ Y=5.5
 
-# 1. สำหรับพาร์ติชันสูง 111 mm (ขอบยาวร่องห่าง 135mm / ขอบสั้นร่องห่าง 40mm)
-GROOVE_X_111 = [4.0 + 40.0 + (i * 135.0) for i in range(5)]   # [44.0, 179.0, 314.0, 449.0, 584.0]
-GROOVE_Y_111 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]  # [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
+# 1. พิกัดสำหรับ PARTITION 111 mm
+# แกน X (111x584): ขอบถึงร่องแรก 40mm, ระยะห่าง 135mm (ได้ 5 ร่อง)
+GX_111 = [4.0 + 40.0 + (i * 135.0) for i in range(5)]   # [44.0, 179.0, 314.0, 449.0, 584.0]
+# แกน Y (111x393): ขอบถึงร่องแรก 14mm, ระยะห่าง 40mm (ได้ 10 ร่อง)
+GY_111 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]  # [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
 
-# 2. สำหรับพาร์ติชันสูง 225 mm (ขอบยาวร่องห่าง 120mm / ขอบสั้นร่องห่าง 40mm)
-GROOVE_X_225 = [4.0 + 40.0 + (i * 120.0) for i in range(5)]   # [44.0, 164.0, 284.0, 404.0, 524.0]
-GROOVE_Y_225 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]  # [19.5, 59.5, 99.5, 139.5, 179.5, 219.5, 259.5, 299.5, 339.5, 379.5]
+# 2. พิกัดสำหรับ PARTITION 225 mm
+# แกน X (225x584): ขอบถึงร่องแรก 40mm, ระยะห่าง 120mm (ได้ 5 ร่อง)
+GX_225 = [4.0 + 40.0 + (i * 120.0) for i in range(5)]   # [44.0, 164.0, 284.0, 404.0, 524.0]
+# แกน Y (225x393): ขอบถึงร่องแรก 14mm, ระยะห่าง 40mm (เหมือน 111mm)
+GY_225 = [5.5 + 14.0 + (i * 40.0) for i in range(10)]
 
-# ฟังก์ชันคำนวณหาเซ็ตการจัดรูปแบบแผ่นพาร์ติชันที่เป็นไปได้แบบไดนามิก (ต้องมีจุดเริ่มและจุดจบเสมอ)
-def generate_dynamic_subsets(grooves):
-    inner_grooves = grooves[1:-1]
-    subsets = []
-    for r in range(0, len(inner_grooves) + 1):
-        for comb in itertools.combinations(inner_grooves, r):
-            subsets.append([grooves[0]] + list(comb) + [grooves[-1]])
-    return subsets
-
-SUBSETS_X_111 = generate_dynamic_subsets(GROOVE_X_111)
-SUBSETS_Y_111 = generate_dynamic_subsets(GROOVE_Y_111)
-SUBSETS_X_225 = generate_dynamic_subsets(GROOVE_X_225)
-SUBSETS_Y_225 = generate_dynamic_subsets(GROOVE_Y_225)
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
@@ -85,27 +76,55 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        # 🔄 สลับชุดพิกัดร่องขัดและเซ็ตย่อยตามความสูงพาร์ติชันที่เหมาะสมโดยอัตโนมัติ
+        # 🔄 เลือกระดับความสูง และดึงชุดพิกัด Grid ของรุ่นนั้นมาใช้งาน
         if eh + clearance <= 111.0:
             part_height = 111.0
             layers = 2
-            gx_all, gy_all = GROOVE_X_111, GROOVE_Y_111
-            subsets_x, subsets_y = SUBSETS_X_111, SUBSETS_Y_111
+            current_gx = GX_111
+            current_gy = GY_111
         elif eh + clearance <= 225.0:
             part_height = 225.0
             layers = 1
-            gx_all, gy_all = GROOVE_X_225, GROOVE_Y_225
-            subsets_x, subsets_y = SUBSETS_X_225, SUBSETS_Y_225
+            current_gx = GX_225
+            current_gy = GY_225
         else:
             continue
 
-        target_w = ew + clearance
-        target_l = el + clearance
+        # สร้าง Subsets แบบไดนามิกตาม Grid ที่ถูกเลือก
+        subsets_x = []
+        for r in range(2, len(current_gx) + 1):
+            for comb in itertools.combinations(current_gx, r):
+                subsets_x.append(sorted(list(comb)))
+
+        subsets_y = []
+        for r in range(2, len(current_gy) + 1):
+            for comb in itertools.combinations(current_gy, r):
+                subsets_y.append(sorted(list(comb)))
+                
+        unique_subsets_y = []
+        y_presets = [
+            current_gy, 
+            current_gy[::2],  # ข้ามทีละร่อง
+            [current_gy[0], current_gy[len(current_gy)//2], current_gy[-1]] 
+        ]
+        for s in y_presets + subsets_y:
+            s_sorted = sorted(list(set(s)))
+            if len(s_sorted) >= 2 and s_sorted not in unique_subsets_y:
+                unique_subsets_y.append(s_sorted)
+
+        # การคำนวณขนาดชิ้นงานเป้าหมาย
+        target_w_single = ew + clearance
+        target_l_single = el + clearance
+        
+        # กรณี Multi-Fit ต้องเผื่อ Clearance หุ้มรอบตัวทุกชิ้น
+        target_w_multi = ew + (2 * clearance)
+        target_l_multi = el + (2 * clearance)
+        target_h_multi = eh + (2 * clearance)
 
         for ax in subsets_x:
-            for ay in subsets_y:
-                x_bounds = sorted(ax)
-                y_bounds = sorted(ay)
+            for ay in unique_subsets_y:
+                x_bounds = [4.0] + ax + [588.0]
+                y_bounds = [5.5] + ay + [398.5]
 
                 valid_slots = []
                 qty_layer_total = 0
@@ -115,17 +134,19 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         slot_w_size = x_bounds[i+1] - x_bounds[i]
                         slot_h_size = y_bounds[j+1] - y_bounds[j]
 
-                        if slot_w_size >= target_l and slot_h_size >= target_w:
+                        # ตรวจสอบว่าใส่ได้อย่างน้อย 1 ชิ้นหรือไม่
+                        if slot_w_size >= target_l_single and slot_h_size >= target_w_single:
+                            
                             if "Standard 1 PC/Slot" in mode:
                                 qty_in_slot_x = 1
                                 qty_in_slot_y = 1
                                 qty_in_slot_z = 1
                             else:
-                                qty_in_slot_x = max(1, int(slot_w_size // target_l))
-                                qty_in_slot_y = max(1, int(slot_h_size // target_w))
+                                qty_in_slot_x = max(1, int(slot_w_size // target_l_multi))
+                                qty_in_slot_y = max(1, int(slot_h_size // target_w_multi))
                                 
                                 if "Stack-Fit" in mode:
-                                    qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
+                                    qty_in_slot_z = max(1, int(part_height // target_h_multi))
                                 else:
                                     qty_in_slot_z = 1
                             
@@ -149,25 +170,22 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                     total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
-                    
-                    base_qty_box = len(valid_slots) * layers 
 
                     best_options.append({
                         "qty_box": qty_box,
-                        "base_qty_box": base_qty_box,
                         "qty_layer": total_pcs_in_layer,
                         "layers": layers,
                         "part_height": part_height,
                         "ax": ax,
                         "ay": ay,
-                        "gx_all": gx_all,  # บันทึกพิกัดร่องขัดหลักของรุ่นนี้ไว้ใช้วาดภาพกราฟิก
-                        "gy_all": gy_all,  # บันทึกพิกัดร่องขัดหลักของรุ่นนี้ไว้ใช้วาดภาพกราฟิก
-                        "x_bounds": [4.0] + ax + [588.0],
-                        "y_bounds": [5.5] + ay + [398.5],
+                        "gx_all": current_gx, # ส่ง Grid หลักไปวาดเส้นประใน SVG
+                        "gy_all": current_gy, # ส่ง Grid หลักไปวาดเส้นประใน SVG
+                        "x_bounds": x_bounds,
+                        "y_bounds": y_bounds,
                         "valid_slots": valid_slots,
                         "orient_label": orient["label"],
-                        "target_w": target_w,
-                        "target_l": target_l,
+                        "target_w": target_w_single,
+                        "target_l": target_l_single,
                         "p_w_disp": ew,
                         "p_l_disp": el,
                         "p_h_disp": eh,
@@ -201,7 +219,6 @@ def draw_asymmetric_svg(opt):
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # วาดกริดร่องขัดมาตรฐานสีเขียว (สลับอัตโนมัติตามระยะของความสูงพาร์ติชันตัวนั้นๆ)
     for sx in gx_all:
         cx = pad_x + (sx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
@@ -209,13 +226,12 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 584.0)*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
-    # วาดเส้นพาร์ติชันจริงที่ถูกใช้งานสีแดง
     for vx in ax:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
     for vy in ay:
         cy = pad_y + (vy * scale)
-        svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 588.0)*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
@@ -238,7 +254,7 @@ def draw_asymmetric_svg(opt):
                 svg += f'<rect x="{rect_x + 1}" y="{rect_y + 1}" width="{draw_w - 2}" height="{draw_h - 2}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
                 
                 if slot["qty_x"] * slot["qty_y"] <= 4 or (kx == 0 and ky == 0):
-                    text_label = "PCBA" if slot["qty_z"] == 1 else f"PCBA x{slot['qty_z']}"
+                    text_label = "Product" if slot["qty_z"] == 1 else f"Product x{slot['qty_z']}"
                     svg += f'<text x="{cx}" y="{cy + 3}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">{text_label}</text>'
                     
     svg += '</svg>'
@@ -339,7 +355,7 @@ def render_packing_list(opt):
         {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น"},
         {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
         {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
-        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
+        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ Product ก่อนนำมาบรรจุลงช่องสล็อต"}
     ]
     
     for item in bom_items:
@@ -357,10 +373,11 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
+    # เลือกเงื่อนไขจัดอันดับ: ดึงโครงสร้างที่มี Capacity ต่อกล่องสูงสุด และมีโครงตาข่าย(dividers)สมบูรณ์ที่สุด
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    fixed_h_options.sort(key=lambda x: (x["qty_box"], x["total_dividers"]), reverse=True)
     
-    overall_options = sorted(options, key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    overall_options = sorted(options, key=lambda x: (x["qty_box"], x["total_dividers"]), reverse=True)
     
     best_fixed = fixed_h_options[0] if fixed_h_options else None
     best_overall = overall_options[0] if overall_options else None
@@ -436,7 +453,6 @@ if options:
             "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
             "ทิศทางจัดวาง": opt["orient_label"],
             "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
-            "โครงสร้างช่อง (Base Slots)": f"{opt['base_qty_box']} ช่อง",
             "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} Pcs",
             "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} Pcs",
             "ความจุรวมในแปลน/ชั้น (Layer Pcs)": f"{opt['qty_layer']} Pcs",
