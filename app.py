@@ -17,8 +17,8 @@ CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-# พิกัดสำหรับพาร์ติชันความสูง 111 mm (แก้ไขระยะ Pitch เป็น 135 mm ตาม Drawing)
-GROOVE_X_111 = [26.0, 161.0, 296.0, 431.0, 566.0]
+# พิกัดสำหรับพาร์ติชันความสูง 111 mm (อัปเดตระยะห่างร่องเป็น 135 mm ตาม Drawing)
+GROOVE_X_111 = [44.0, 179.0, 314.0, 449.0, 584.0]
 GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
 # พิกัดสำหรับพาร์ติชันความสูง 225 mm (คำนวณฟัน 120 mm, ขอบนอกถึงร่องแรก/ร่องสุดท้ายถึงขอบนอก = 40 mm)
@@ -393,4 +393,92 @@ def render_packing_list(opt):
 # --- MAIN RENDER ---
 if options:
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse
+    fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    
+    overall_options = sorted(options, key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    
+    best_fixed = fixed_h_options[0] if fixed_h_options else None
+    best_overall = overall_options[0] if overall_options else None
+    
+    has_better_alternative = best_overall and best_fixed and (best_overall["qty_box"] > best_fixed["qty_box"])
+
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.header("1️⃣ Fixed H Layout")
+        if best_fixed:
+            st.success(f"📌 **ทิศทางการจัดวาง:** {best_fixed['orient_label']}")
+            
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_fixed['qty_layer']} Pcs")
+            m_col2.metric("จำนวนชั้น (Layers)", f"{best_fixed['layers']} ชั้น")
+            m_col3.metric("ความจุรวม/กล่อง", f"{best_fixed['qty_box']} Pcs/Box")
+            
+            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
+            render_packing_list(best_fixed)
+            
+            st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
+            st.write(draw_asymmetric_svg(best_fixed), unsafe_allow_html=True)
+            
+            st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View Blueprint)")
+            st.write(draw_side_view_svg(best_fixed), unsafe_allow_html=True)
+        else:
+            st.error("❌ ไม่พบรูปแบบพาร์ติชันสำหรับความสูง (H) นี้ได้จริง กรุณาตรวจสอบขนาดและลองอีกครั้ง")
+
+    with col2:
+        st.header("2️⃣ Alternative Option")
+        if has_better_alternative:
+            st.warning(f"🔥 **แนะนำเปลี่ยนทิศทางการวางเป็น:** {best_overall['orient_label']}")
+            
+            a_col1, a_col2, a_col3 = st.columns(3)
+            a_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_overall['qty_layer']} Pcs", f"+{best_overall['qty_layer'] - best_fixed['qty_layer']} Pcs")
+            a_col2.metric("จำนวนชั้น (Layers)", f"{best_overall['layers']} ชั้น")
+            a_col3.metric("ความจุรวม/กล่อง", f"{best_overall['qty_box']} Pcs/Box", f"+{best_overall['qty_box'] - best_fixed['qty_box']} Pcs")
+            
+            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
+            render_packing_list(best_overall)
+            
+            st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
+            st.write(draw_asymmetric_svg(best_overall), unsafe_allow_html=True)
+            
+            st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View Blueprint)")
+            st.write(draw_side_view_svg(best_overall), unsafe_allow_html=True)
+        else:
+            st.info("💡 **การประเมินวิศวกรรมเชิงลึก:**")
+            st.markdown(f"""
+            <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 20px; border-radius: 12px; margin-top: 10px;">
+                <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
+                <p style="color: #166534; font-size: 15px; line-height: 1.6;">
+                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้กำลังความจุรวมต่อกล่องสูงที่สุดแล้วภายใต้เงื่อนไขบรรจุภัณฑ์ปัจจุบัน
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if best_fixed:
+                st.subheader("📊 รายละเอียดสรุปโครงสร้างปัจจุบัน")
+                st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
+                example_slot = best_fixed['valid_slots'][0]
+                total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
+                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
+                st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
+
+    st.write("---")
+    st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดและทิศทางการจัดวางที่เป็นไปได้ทั้งหมด")
+    
+    summary_table = []
+    for idx, opt in enumerate(overall_options[:10]):
+        summary_table.append({
+            "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
+            "ทิศทางจัดวาง": opt["orient_label"],
+            "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
+            "โครงสร้างช่อง (Base Slots)": f"{opt['base_qty_box']} ช่อง",
+            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
+            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
+            "ความจุรวมในแปลน/ชั้น (Layer Pcs)": f"{opt['qty_layer']} Pcs",
+            "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
+            "ความจุรวมกล่องหลังจากทับ/เบียด (Box Qty)": f"{opt['qty_box']} Pcs/Box"
+        })
+    st.dataframe(summary_table, use_container_width=True)
+
+else:
+    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่สามารถบรรจุผลิตภัณฑ์ขนาดนี้ลงในกล่อง Carton A10 ได้จริง กรุณาปรับระยะ Clearance หรือตรวจสอบขนาดผลิตภัณฑ์อีกครั้ง")
