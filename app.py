@@ -366,8 +366,8 @@ def render_packing_list(opt):
     layers_count = opt["layers"]
     paper_pads = layers_count + 1
     
-    # ดึงขนาดความยาวของพาร์ติชันจริงมาแสดงในรายการวัตถุ BOM
-    part_l_dim = 584 if opt['part_height'] == 111.0 else 560
+    # แก้ไขขนาด Out line ของ Partition ให้เป็น 584 เสมอสำหรับ Carton A10
+    part_l_dim = 584 
     
     bom_items = [
         {"name": "กล่องกระดาษภายนอก (Master Carton A10)", "qty": "1 Pcs", "spec": "OD: 602x414x270 mm | ID: 592x404x255 mm"},
