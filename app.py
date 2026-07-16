@@ -32,7 +32,7 @@ p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Lengt
 p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=160.0, step=1.0)
 
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
-clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 5.0, step=0.5)
+clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 10.0, step=0.5)
 
 st.sidebar.header("🔄 3. เงื่อนไขจำนวนชิ้นงานต่อช่อง (Slot Capacity)")
 packing_mode = st.sidebar.radio(
