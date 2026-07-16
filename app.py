@@ -12,13 +12,18 @@ st.set_page_config(
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
 
-# --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษ) ---
+# --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษแยกตามความสูง) ---
 CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-GROOVE_X_ALL = [13.5, 154.75, 296.0, 437.25, 578.5]
-GROOVE_Y_ALL = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# พิกัดสำหรับพาร์ติชันความสูง 111 mm
+GROOVE_X_111 = [13.5, 154.75, 296.0, 437.25, 578.5]
+GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+
+# พิกัดสำหรับพาร์ติชันความสูง 225 mm (คำนวณฟัน 120 mm, ขอบนอกถึงร่องแรก/ร่องสุดท้ายถึงขอบนอก = 40 mm)
+GROOVE_X_225 = [56.0, 176.0, 296.0, 416.0, 536.0]
+GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
@@ -58,49 +63,62 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
 
     best_options = []
 
-    # บังคับให้โครงสร้างต้องมีร่องแรกและร่องสุดท้ายเสมอ (สร้างกรอบ Outer Bound)
-    subsets_x = []
-    inner_x = GROOVE_X_ALL[1:-1]
-    for r in range(0, len(inner_x) + 1):
-        for comb in itertools.combinations(inner_x, r):
-            subsets_x.append([GROOVE_X_ALL[0]] + list(comb) + [GROOVE_X_ALL[-1]])
-
-    subsets_y = []
-    inner_y = GROOVE_Y_ALL[1:-1]
-    for r in range(0, len(inner_y) + 1):
-        for comb in itertools.combinations(inner_y, r):
-            subsets_y.append([GROOVE_Y_ALL[0]] + list(comb) + [GROOVE_Y_ALL[-1]])
-            
-    unique_subsets_y = []
-    y_presets = [
-        GROOVE_Y_ALL, 
-        [19.5, 110.75, 202.0, 293.25, 384.5], 
-        [19.5, 202.0, 384.5], 
-    ]
-    for s in y_presets + subsets_y:
-        s_sorted = sorted(s)
-        if s_sorted[0] != GROOVE_Y_ALL[0]: s_sorted.insert(0, GROOVE_Y_ALL[0])
-        if s_sorted[-1] != GROOVE_Y_ALL[-1]: s_sorted.append(GROOVE_Y_ALL[-1])
-        s_sorted = sorted(list(set(s_sorted)))
-        if s_sorted not in unique_subsets_y:
-            unique_subsets_y.append(s_sorted)
-
     for orient in orientations_3d:
         ew = orient["flat_w"]
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
+        # เลือกใช้ขนาดร่องขัดและระยะขอบนอกตามเงื่อนไขความสูง Partition
         if eh + clearance <= 111.0:
             part_height = 111.0
             layers = 2
+            groove_x_all = GROOVE_X_111
+            groove_y_all = GROOVE_Y_111
+            x_start_pad = 4.0
+            x_end_pad = 588.0
+            y_start_pad = 5.5
+            y_end_pad = 398.5
         elif eh + clearance <= 225.0:
             part_height = 225.0
             layers = 1
+            groove_x_all = GROOVE_X_225
+            groove_y_all = GROOVE_Y_225
+            x_start_pad = 16.0
+            x_end_pad = 576.0
+            y_start_pad = 5.5
+            y_end_pad = 398.5
         else:
             continue
 
         target_w = ew + clearance
         target_l = el + clearance
+
+        # สร้าง Subset ร่องจากพิกัดของความสูงนั้นๆ จริง
+        subsets_x = []
+        inner_x = groove_x_all[1:-1]
+        for r in range(0, len(inner_x) + 1):
+            for comb in itertools.combinations(inner_x, r):
+                subsets_x.append([groove_x_all[0]] + list(comb) + [groove_x_all[-1]])
+
+        subsets_y = []
+        inner_y = groove_y_all[1:-1]
+        for r in range(0, len(inner_y) + 1):
+            for comb in itertools.combinations(inner_y, r):
+                subsets_y.append([groove_y_all[0]] + list(comb) + [groove_y_all[-1]])
+                
+        unique_subsets_y = []
+        y_presets = [
+            groove_y_all, 
+            [19.5, 110.75, 202.0, 293.25, 384.5], 
+            [19.5, 202.0, 384.5], 
+        ]
+        for s in y_presets + subsets_y:
+            s_sorted = sorted(s)
+            if s_sorted[0] != groove_y_all[0]: s_sorted.insert(0, groove_y_all[0])
+            if s_sorted[-1] != groove_y_all[-1]: s_sorted.append(groove_y_all[-1])
+            s_sorted = sorted(list(set(s_sorted)))
+            if s_sorted not in unique_subsets_y:
+                unique_subsets_y.append(s_sorted)
 
         for ax in subsets_x:
             for ay in unique_subsets_y:
@@ -150,19 +168,18 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
                     
-                    # [🔥 NEW FIX] สร้าง base_qty_box จำลองโครงสร้างจำนวนช่อง 1 ชิ้น/ช่อง เพื่อรักษาโครงสร้างพาร์ติชัน
                     base_qty_box = len(valid_slots) * layers 
 
                     best_options.append({
                         "qty_box": qty_box,
-                        "base_qty_box": base_qty_box, # <--- เพิ่มตัวแปรนี้
+                        "base_qty_box": base_qty_box, 
                         "qty_layer": total_pcs_in_layer,
                         "layers": layers,
                         "part_height": part_height,
                         "ax": ax,
                         "ay": ay,
-                        "x_bounds": [4.0] + ax + [588.0],
-                        "y_bounds": [5.5] + ay + [398.5],
+                        "x_bounds": [x_start_pad] + ax + [x_end_pad],
+                        "y_bounds": [y_start_pad] + ay + [y_end_pad],
                         "valid_slots": valid_slots,
                         "orient_label": orient["label"],
                         "target_w": target_w,
@@ -193,25 +210,40 @@ def draw_asymmetric_svg(opt):
     view_w = (CARTON_L * scale) + (pad_x * 2)
     view_h = (CARTON_W * scale) + (pad_y * 2)
     
+    x_start_pad = x_bounds[0]
+    x_end_pad = x_bounds[-1]
+    y_start_pad = y_bounds[0]
+    y_end_pad = y_bounds[-1]
+    p_w_rect = x_end_pad - x_start_pad
+    p_h_rect = y_end_pad - y_start_pad
+    
     svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
-    svg += f'<rect x="{pad_x + 4.0*scale}" y="{pad_y + 5.5*scale}" width="{(584.0)*scale}" height="{(393.0)*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
+    
+    # วาดกรอบนอกสุดของแผ่นพาร์ติชันแบบ Dynamic
+    svg += f'<rect x="{pad_x + x_start_pad*scale}" y="{pad_y + y_start_pad*scale}" width="{p_w_rect*scale}" height="{p_h_rect*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    for sx in GROOVE_X_ALL:
+    # ดึงเส้นไกด์ไลน์มาตรฐานตามความสูงที่ใช้งานจริง
+    grooves_x_ref = GROOVE_X_111 if opt["part_height"] == 111.0 else GROOVE_X_225
+    grooves_y_ref = GROOVE_Y_111 if opt["part_height"] == 111.0 else GROOVE_Y_225
+
+    for sx in grooves_x_ref:
         cx = pad_x + (sx * scale)
-        svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
-    for sy in GROOVE_Y_ALL:
+        svg += f'<line x1="{cx}" y1="{pad_y + y_start_pad*scale}" x2="{cx}" y2="{pad_y + y_end_pad*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+    for sy in grooves_y_ref:
         cy = pad_y + (sy * scale)
-        svg += f'<line x1="{(pad_x + 4.0)*scale}" y1="{cy}" x2="{(pad_x + 584.0)*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+        svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
+    # วาดแผ่นกั้นจริง (Solid Divider เส้นสีแดง)
     for vx in ax:
         cx = pad_x + (vx * scale)
-        svg += f'<line x1="{cx}" y1="{pad_y + 5.5*scale}" x2="{cx}" y2="{pad_y + 398.5*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        svg += f'<line x1="{cx}" y1="{pad_y + y_start_pad*scale}" x2="{cx}" y2="{pad_y + y_end_pad*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
     for vy in ay:
         cy = pad_y + (vy * scale)
-        svg += f'<line x1="{pad_x + 4.0*scale}" y1="{cy}" x2="{pad_x + 588.0*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
+    # วาดชิ้นงานลงในช่องสล็อตที่ถูกต้อง (จะไม่หลุดไปช่องริม)
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
@@ -254,6 +286,10 @@ def draw_side_view_svg(opt):
     prod_h = opt["p_h_disp"] * scale_y
     pad_thickness = 3.0 * scale_y  
     
+    x_start_pad = opt["x_bounds"][0]
+    x_end_pad = opt["x_bounds"][-1]
+    p_w_rect = x_end_pad - x_start_pad
+    
     svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
     
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
@@ -262,7 +298,8 @@ def draw_side_view_svg(opt):
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
-        svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{level_y_start}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
+        # วาดแผ่นรองขอบแบน (Pad กระดาษ)
+        svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{level_y_start}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
         svg += f'<text x="{pad_x + 15}" y="{level_y_start + pad_thickness - 2}" font-family="system-ui, sans-serif" font-size="9" fill="#475569">Pad</text>'
         
         partition_top_y = level_y_start - part_h
@@ -312,12 +349,12 @@ def draw_side_view_svg(opt):
                         svg += f'<text x="{gap_line_x + 5}" y="{top_rect_y - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#2563eb">Gap: {int(top_gap)} mm</text>'
 
     top_pad_y = pad_y + box_h - (opt["layers"] * (part_h + pad_thickness)) - pad_thickness
-    svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{top_pad_y}" width="{(584.0)*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
+    svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{top_pad_y}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
     
     total_used_h = (opt["part_height"] + 3.0) * opt["layers"] + 3.0
     remaining_box_air_gap = CARTON_H - total_used_h
     if remaining_box_air_gap > 0:
-        svg += f'<rect x="{pad_x + 4.0*scale_x}" y="{pad_y}" width="{(584.0)*scale_x}" height="{remaining_box_air_gap * scale_y}" fill="#f1f5f9" opacity="0.6" stroke="#babfc7" stroke-dasharray="4,4"/>'
+        svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{pad_y}" width="{p_w_rect*scale_x}" height="{remaining_box_air_gap * scale_y}" fill="#f1f5f9" opacity="0.6" stroke="#babfc7" stroke-dasharray="4,4"/>'
         svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y + (remaining_box_air_gap * scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold" fill="#64748b" text-anchor="middle">📦 โซนว่างบนสุดกล่องภายนอก (Carton Top Air Gap): {int(remaining_box_air_gap)} mm</text>'
 
     svg += '</svg>'
@@ -329,10 +366,13 @@ def render_packing_list(opt):
     layers_count = opt["layers"]
     paper_pads = layers_count + 1
     
+    # ดึงขนาดความยาวของพาร์ติชันจริงมาแสดงในรายการวัตถุ BOM
+    part_l_dim = 584 if opt['part_height'] == 111.0 else 560
+    
     bom_items = [
         {"name": "กล่องกระดาษภายนอก (Master Carton A10)", "qty": "1 Pcs", "spec": "OD: 602x414x270 mm | ID: 592x404x255 mm"},
         {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น"},
-        {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x584)", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
+        {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x{part_l_dim})", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
         {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
         {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
     ]
@@ -352,9 +392,6 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
-    # [🔥 FIX 4] เปลี่ยนการเรียงลำดับใหม่ทั้งหมด
-    # บังคับให้ดู `base_qty_box` (จำนวนโครงสร้างช่อง) เป็นอันดับแรก 
-    # เพื่อให้ Grid ภายในเหมือนเงื่อนไขที่ 1 เสมอ ก่อนจะดูปริมาณจุรวม (qty_box)
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
     fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
     
