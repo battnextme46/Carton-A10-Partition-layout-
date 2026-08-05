@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
-st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร ตามพิกัดร่องขัดจริงโดยคำนึงถึงขอบกันชนรอบกล่อง (Fully Enclosed Slots) พร้อมระบบจำลอง Side View และการวางหลายชิ้นต่อช่อง")
+st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร พร้อมโครงสร้าง Grid เสริมความแข็งแรง (Structural Guardrails) ป้องกันช่องยักษ์และการกระแทกของชิ้นงาน")
 
 # --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษแยกตามความสูง) ---
 CARTON_L = 592.0
@@ -30,8 +30,8 @@ GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=215.0, step=1.0)
-p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=50.0, step=1.0)
+p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=30.0, step=1.0)
+p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=40.0, step=1.0)
 p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=30.0, step=1.0)
 
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
@@ -47,8 +47,12 @@ packing_mode = st.sidebar.radio(
     ]
 )
 
-# --- DYNAMIC SOLVER ENGINE ---
-def find_asymmetric_optimal_layout(pw, pl, ph, mode):
+st.sidebar.header("🏗️ 4. ข้อจำกัดความแข็งแรงโครงสร้าง (Structural Guardrails)")
+max_pcs_axis = st.sidebar.slider("จำนวนชิ้นงานสูงสุดต่อแกนใน 1 ช่อง (Max Pcs/Axis)", 1, 4, 2, help="เช่น ปรับเป็น 2 หมายถึง วางเบียดกันได้ไม่เกิน 2x2 = 4 ชิ้นต่อช่อง")
+max_slot_span = st.sidebar.number_input("ระยะความยาวช่องสูงสุดป้องกันการแอ่นตัว (Max Span) (mm)", value=160.0, step=10.0, help="หากช่องกว้างเกินค่านี้นวัตกรรมจะไม่ยอมรับเพื่อป้องกัน BCT Buckling")
+
+# --- DYNAMIC SOLVER ENGINE WITH STRUCTURAL GUARDRAILS ---
+def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_limit):
     all_dims = [pw, pl, ph]
     unique_orientations = set(itertools.permutations(all_dims))
     
@@ -96,6 +100,10 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
         target_w = ew + clearance
         target_l = el + clearance
 
+        # คำนวณ Effective Max Span ปรับตามขนาดชิ้นงานจริง
+        eff_max_span_x = max(max_span_limit, target_l)
+        eff_max_span_y = max(max_span_limit, target_w)
+
         # สร้าง Subset ร่องจากพิกัดของความสูงนั้นๆ จริง
         subsets_x = []
         inner_x = groove_x_all[1:-1]
@@ -128,25 +136,39 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                 x_bounds = sorted(ax)
                 y_bounds = sorted(ay)
 
-                # --- 1. STRICT VALIDITY FILTER: ตรวจสอบว่าทุกช่องสล็อตที่กั้นขึ้นมา วางชิ้นงานได้อย่างน้อย 1 ชิ้น ---
+                # --- 1. STRICT VALIDITY & STRUCTURAL GRID FILTER ---
                 all_slots_valid = True
+                
+                # ตรวจสอบแกน X
                 for i in range(len(x_bounds) - 1):
-                    if (x_bounds[i+1] - x_bounds[i]) < target_l:
+                    span_x = x_bounds[i+1] - x_bounds[i]
+                    if span_x < target_l:
                         all_slots_valid = False
                         break
+                    # บังคับโครงสร้าง Grid: ห้ามให้ระยะ Span กว้างเกินกำหนดเพื่อป้องกัน BCT Collapse
+                    if "Standard 1 PC/Slot" not in mode and span_x > eff_max_span_x:
+                        all_slots_valid = False
+                        break
+
                 if not all_slots_valid:
                     continue
 
+                # ตรวจสอบแกน Y
                 for j in range(len(y_bounds) - 1):
-                    if (y_bounds[j+1] - y_bounds[j]) < target_w:
+                    span_y = y_bounds[j+1] - y_bounds[j]
+                    if span_y < target_w:
                         all_slots_valid = False
                         break
+                    # บังคับโครงสร้าง Grid: ห้ามให้ระยะ Span กว้างเกินกำหนดเพื่อป้องกัน BCT Collapse
+                    if "Standard 1 PC/Slot" not in mode and span_y > eff_max_span_y:
+                        all_slots_valid = False
+                        break
+
                 if not all_slots_valid:
                     continue
 
-                # --- 2. SLOT CALCULATIONS ---
+                # --- 2. SLOT CALCULATIONS WITH GROUPING CAP ---
                 valid_slots = []
-                qty_layer_total = 0
                 
                 for i in range(len(x_bounds) - 1):
                     for j in range(len(y_bounds) - 1):
@@ -158,11 +180,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                             qty_in_slot_y = 1
                             qty_in_slot_z = 1
                         else:
-                            qty_in_slot_x = max(1, int(slot_w_size // target_l))
-                            qty_in_slot_y = max(1, int(slot_h_size // target_w))
+                            # ล็อคจำนวนชิ้นสูงสุดต่อแกนตาม Structural Guardrails
+                            calc_x = max(1, int(slot_w_size // target_l))
+                            calc_y = max(1, int(slot_h_size // target_w))
+                            qty_in_slot_x = min(max_pcs_per_axis, calc_x)
+                            qty_in_slot_y = min(max_pcs_per_axis, calc_y)
                             
                             if "Stack-Fit" in mode:
-                                # แก้ไขการคิดแกน Z: นำ Clearance ออกไปหักออกจากความสูงพาร์ติชันรอบเดียวก่อนหารด้วยความหนาชิ้นงาน
                                 if part_height >= eh:
                                     qty_in_slot_z = max(1, int((part_height - clearance) // eh))
                                 else:
@@ -171,7 +195,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                                 qty_in_slot_z = 1
                         
                         pcs_in_this_slot = qty_in_slot_x * qty_in_slot_y * qty_in_slot_z
-                        qty_layer_total += (qty_in_slot_x * qty_in_slot_y) 
                         
                         valid_slots.append({
                             "col_idx": i,
@@ -221,7 +244,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
 
     return best_options
 
-options = find_asymmetric_optimal_layout(p_w, p_l, p_h, packing_mode)
+options = find_asymmetric_optimal_layout(p_w, p_l, p_h, packing_mode, max_pcs_axis, max_slot_span)
 
 # --- SVG TOP VIEW RENDERER ---
 def draw_asymmetric_svg(opt):
@@ -271,7 +294,7 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (vy * scale)
         svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
-    # วาดชิ้นงานลงในช่องสล็อตที่ถูกต้อง
+    # วาดชิ้นงานลงในช่องสล็อต
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
@@ -343,7 +366,6 @@ def draw_side_view_svg(opt):
         if len(x_bounds) >= 2:
             for b_idx in range(len(x_bounds)-1):
                 slot_w = x_bounds[b_idx+1] - x_bounds[b_idx]
-                
                 matching_slot = next((s for s in opt["valid_slots"] if s["col_idx"] == b_idx), None)
                 
                 if matching_slot:
@@ -476,7 +498,7 @@ if options:
             <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 20px; border-radius: 12px; margin-top: 10px;">
                 <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
                 <p style="color: #166534; font-size: 15px; line-height: 1.6;">
-                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้กำลังความจุรวมต่อกล่องสูงที่สุดแล้วภายใต้เงื่อนไขบรรจุภัณฑ์ปัจจุบัน
+                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พร้อม Structural Guardrails พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้ความจุรวมสูงสุดและมีโครงสร้าง Grid ที่แข็งแรงปลอดภัยตามมาตรฐาน
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -487,7 +509,7 @@ if options:
                 example_slot = best_fixed['valid_slots'][0]
                 total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
                 st.write(f"• **พื้นที่ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
-                st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
+                st.write(f"• **ระบบป้องกัน BCT:** จำกัดขนาดช่องไม่เกิน {int(max_slot_span)} mm และวางเบียดสูงสุดไม่เกิน {max_pcs_axis}x{max_pcs_axis} ชิ้น/ช่อง")
 
     st.write("---")
     st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดและทิศทางการจัดวางที่เป็นไปได้ทั้งหมด")
@@ -508,4 +530,4 @@ if options:
     st.dataframe(summary_table, use_container_width=True)
 
 else:
-    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่สามารถบรรจุผลิตภัณฑ์ขนาดนี้ลงในกล่อง Carton A10 ได้จริง กรุณาปรับระยะ Clearance หรือตรวจสอบขนาดผลิตภัณฑ์อีกครั้ง")
+    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่ผ่านเกณฑ์ความแข็งแรงโครงสร้าง (Structural Guardrails) ได้จริง กรุณาปรับระยะ Clearance หรือขยายค่า Max Span ใน Sidebar")
