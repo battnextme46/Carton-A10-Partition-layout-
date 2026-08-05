@@ -30,9 +30,9 @@ GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=25.0, step=1.0)
-p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=200.0, step=1.0)
-p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=160.0, step=1.0)
+p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=215.0, step=1.0)
+p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=50.0, step=1.0)
+p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=30.0, step=1.0)
 
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
 clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 10.0, step=0.5)
@@ -128,7 +128,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                 x_bounds = sorted(ax)
                 y_bounds = sorted(ay)
 
-                # --- 1. STRICT VALIDITY FILTER: ตรวจสอบว่าทุกช่องสล็อตที่กั้นก้านขึ้นมา สามารถวางชิ้นงานได้จริง ---
+                # --- 1. STRICT VALIDITY FILTER: ตรวจสอบว่าทุกช่องสล็อตที่กั้นขึ้นมา วางชิ้นงานได้อย่างน้อย 1 ชิ้น ---
                 all_slots_valid = True
                 for i in range(len(x_bounds) - 1):
                     if (x_bounds[i+1] - x_bounds[i]) < target_l:
@@ -162,7 +162,11 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                             qty_in_slot_y = max(1, int(slot_h_size // target_w))
                             
                             if "Stack-Fit" in mode:
-                                qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
+                                # แก้ไขการคิดแกน Z: นำ Clearance ออกไปหักออกจากความสูงพาร์ติชันรอบเดียวก่อนหารด้วยความหนาชิ้นงาน
+                                if part_height >= eh:
+                                    qty_in_slot_z = max(1, int((part_height - clearance) // eh))
+                                else:
+                                    qty_in_slot_z = 1
                             else:
                                 qty_in_slot_z = 1
                         
@@ -415,7 +419,6 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
-    # จัดลำดับ: 1. ความจุรวมสูงสุด -> 2. ช่องสล็อตหลักสูงสุด -> 3. เบี่ยงเบนจากศูนย์กลางน้อยที่สุด (ใกล้เคียงกึ่งกลางที่สุด) -> 4. ใช้แผ่นกั้นน้อยที่สุด
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
     fixed_h_options.sort(key=lambda x: (x["qty_box"], x["base_qty_box"], -x["center_offset"], -x["total_dividers"]), reverse=True)
     
@@ -483,7 +486,7 @@ if options:
                 st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
                 example_slot = best_fixed['valid_slots'][0]
                 total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
-                st.write(f"• **ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
+                st.write(f"• **พื้นที่ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
                 st.write(f"• **พื้นที่ช่องว่าง Buffer ขอบนอกสุด (Buffer Margin):** ปลอดภัยเป็น Crumple Zone ซับแรงกระแทก")
 
     st.write("---")
