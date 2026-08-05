@@ -17,11 +17,14 @@ CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-# พิกัดสำหรับพาร์ติชันความสูง 111 mm (อัปเดตระยะห่างร่องเป็น 135 mm ตาม Drawing)
+CARTON_CX = CARTON_L / 2.0  # 296.0 mm
+CARTON_CY = CARTON_W / 2.0  # 202.0 mm
+
+# พิกัดสำหรับพาร์ติชันความสูง 111 mm (ระยะห่างร่อง 135 mm ตาม Drawing)
 GROOVE_X_111 = [12.0, 152.0, 292.0, 432.0, 572.0]
 GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
-# พิกัดสำหรับพาร์ติชันความสูง 225 mm (คำนวณฟัน 120 mm, ขอบนอกถึงร่องแรก/ร่องสุดท้ายถึงขอบนอก = 40 mm)
+# พิกัดสำหรับพาร์ติชันความสูง 225 mm (ฟัน 120 mm)
 GROOVE_X_225 = [56.0, 176.0, 296.0, 416.0, 536.0]
 GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
@@ -125,6 +128,23 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                 x_bounds = sorted(ax)
                 y_bounds = sorted(ay)
 
+                # --- 1. STRICT VALIDITY FILTER: ตรวจสอบว่าทุกช่องสล็อตที่กั้นก้านขึ้นมา สามารถวางชิ้นงานได้จริง ---
+                all_slots_valid = True
+                for i in range(len(x_bounds) - 1):
+                    if (x_bounds[i+1] - x_bounds[i]) < target_l:
+                        all_slots_valid = False
+                        break
+                if not all_slots_valid:
+                    continue
+
+                for j in range(len(y_bounds) - 1):
+                    if (y_bounds[j+1] - y_bounds[j]) < target_w:
+                        all_slots_valid = False
+                        break
+                if not all_slots_valid:
+                    continue
+
+                # --- 2. SLOT CALCULATIONS ---
                 valid_slots = []
                 qty_layer_total = 0
                 
@@ -133,42 +153,45 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         slot_w_size = x_bounds[i+1] - x_bounds[i]
                         slot_h_size = y_bounds[j+1] - y_bounds[j]
 
-                        if slot_w_size >= target_l and slot_h_size >= target_w:
-                            if "Standard 1 PC/Slot" in mode:
-                                qty_in_slot_x = 1
-                                qty_in_slot_y = 1
-                                qty_in_slot_z = 1
+                        if "Standard 1 PC/Slot" in mode:
+                            qty_in_slot_x = 1
+                            qty_in_slot_y = 1
+                            qty_in_slot_z = 1
+                        else:
+                            qty_in_slot_x = max(1, int(slot_w_size // target_l))
+                            qty_in_slot_y = max(1, int(slot_h_size // target_w))
+                            
+                            if "Stack-Fit" in mode:
+                                qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
                             else:
-                                qty_in_slot_x = max(1, int(slot_w_size // target_l))
-                                qty_in_slot_y = max(1, int(slot_h_size // target_w))
-                                
-                                if "Stack-Fit" in mode:
-                                    qty_in_slot_z = max(1, int(part_height // (eh + clearance)))
-                                else:
-                                    qty_in_slot_z = 1
-                            
-                            pcs_in_this_slot = qty_in_slot_x * qty_in_slot_y * qty_in_slot_z
-                            qty_layer_total += (qty_in_slot_x * qty_in_slot_y) 
-                            
-                            valid_slots.append({
-                                "col_idx": i,
-                                "row_idx": j,
-                                "x_start": x_bounds[i],
-                                "x_end": x_bounds[i+1],
-                                "y_start": y_bounds[j],
-                                "y_end": y_bounds[j+1],
-                                "qty_x": qty_in_slot_x,
-                                "qty_y": qty_in_slot_y,
-                                "qty_z": qty_in_slot_z,
-                                "pcs_per_slot": pcs_in_this_slot
-                            })
+                                qty_in_slot_z = 1
+                        
+                        pcs_in_this_slot = qty_in_slot_x * qty_in_slot_y * qty_in_slot_z
+                        qty_layer_total += (qty_in_slot_x * qty_in_slot_y) 
+                        
+                        valid_slots.append({
+                            "col_idx": i,
+                            "row_idx": j,
+                            "x_start": x_bounds[i],
+                            "x_end": x_bounds[i+1],
+                            "y_start": y_bounds[j],
+                            "y_end": y_bounds[j+1],
+                            "qty_x": qty_in_slot_x,
+                            "qty_y": qty_in_slot_y,
+                            "qty_z": qty_in_slot_z,
+                            "pcs_per_slot": pcs_in_this_slot
+                        })
 
                 if len(valid_slots) > 0:
                     total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
                     total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
                     qty_box = total_pcs_in_slot_all * layers
-                    
                     base_qty_box = len(valid_slots) * layers 
+
+                    # คำนวณระดับความสมมาตร/ระยะห่างจากจุดศูนย์กลางกล่อง
+                    grid_cx = (x_bounds[0] + x_bounds[-1]) / 2.0
+                    grid_cy = (y_bounds[0] + y_bounds[-1]) / 2.0
+                    center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
 
                     best_options.append({
                         "qty_box": qty_box,
@@ -188,7 +211,8 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode):
                         "p_l_disp": el,
                         "p_h_disp": eh,
                         "total_dividers": len(ax) + len(ay),
-                        "is_fixed_h": orient["is_fixed_h"]
+                        "is_fixed_h": orient["is_fixed_h"],
+                        "center_offset": center_offset
                     })
 
     return best_options
@@ -221,10 +245,10 @@ def draw_asymmetric_svg(opt):
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     
-    # วาดกรอบนอกสุดของแผ่นพาร์ติชันแบบ Dynamic
+    # วาดกรอบนอกสุดของแผ่นพาร์ติชัน
     svg += f'<rect x="{pad_x + x_start_pad*scale}" y="{pad_y + y_start_pad*scale}" width="{p_w_rect*scale}" height="{p_h_rect*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # ดึงเส้นไกด์ไลน์มาตรฐานตามความสูงที่ใช้งานจริง
+    # เส้นไกด์ไลน์ร่องขัดมาตรฐาน
     grooves_x_ref = GROOVE_X_111 if opt["part_height"] == 111.0 else GROOVE_X_225
     grooves_y_ref = GROOVE_Y_111 if opt["part_height"] == 111.0 else GROOVE_Y_225
 
@@ -243,7 +267,7 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (vy * scale)
         svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
-    # วาดชิ้นงานลงในช่องสล็อตที่ถูกต้อง (จะไม่หลุดไปช่องริม)
+    # วาดชิ้นงานลงในช่องสล็อตที่ถูกต้อง
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
@@ -298,7 +322,7 @@ def draw_side_view_svg(opt):
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
-        # วาดแผ่นรองขอบแบน (Pad กระดาษ)
+        # แผ่นรองขอบแบน (Corrugated Pad)
         svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{level_y_start}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
         svg += f'<text x="{pad_x + 15}" y="{level_y_start + pad_thickness - 2}" font-family="system-ui, sans-serif" font-size="9" fill="#475569">Pad</text>'
         
@@ -366,7 +390,6 @@ def render_packing_list(opt):
     layers_count = opt["layers"]
     paper_pads = layers_count + 1
     
-    # แก้ไขขนาด Out line ของ Partition ให้เป็น 584 เสมอสำหรับ Carton A10
     part_l_dim = 584 
     
     bom_items = [
@@ -392,10 +415,11 @@ def render_packing_list(opt):
 
 # --- MAIN RENDER ---
 if options:
+    # จัดลำดับ: 1. ความจุรวมสูงสุด -> 2. ช่องสล็อตหลักสูงสุด -> 3. เบี่ยงเบนจากศูนย์กลางน้อยที่สุด (ใกล้เคียงกึ่งกลางที่สุด) -> 4. ใช้แผ่นกั้นน้อยที่สุด
     fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    fixed_h_options.sort(key=lambda x: (x["qty_box"], x["base_qty_box"], -x["center_offset"], -x["total_dividers"]), reverse=True)
     
-    overall_options = sorted(options, key=lambda x: (x["base_qty_box"], x["qty_box"], x["total_dividers"]), reverse=True)
+    overall_options = sorted(options, key=lambda x: (x["qty_box"], x["base_qty_box"], -x["center_offset"], -x["total_dividers"]), reverse=True)
     
     best_fixed = fixed_h_options[0] if fixed_h_options else None
     best_overall = overall_options[0] if overall_options else None
