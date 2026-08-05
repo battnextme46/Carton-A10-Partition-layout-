@@ -2,7 +2,7 @@ import streamlit as st
 import math
 import itertools
 
-# ตั้งค่าหน้าเว็บให้แสดงผลสวยงามเต็มจอ
+# ตั้งค่าหน้าเว็บให้แสดงผลเต็มหน้าจอ
 st.set_page_config(
     page_title="Carton A10 Partition Optimizer",
     layout="wide",
@@ -30,8 +30,8 @@ GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=30.0, step=1.0)
-p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=40.0, step=1.0)
+p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=135.0, step=1.0)
+p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=160.0, step=1.0)
 p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=30.0, step=1.0)
 
 st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
@@ -51,7 +51,7 @@ st.sidebar.header("🏗️ 4. ข้อจำกัดความแข็ง�
 max_pcs_axis = st.sidebar.slider("จำนวนชิ้นงานสูงสุดต่อแกนใน 1 ช่อง (Max Pcs/Axis)", 1, 4, 2, help="เช่น ปรับเป็น 2 หมายถึง วางเบียดกันได้ไม่เกิน 2x2 = 4 ชิ้นต่อช่อง")
 max_slot_span = st.sidebar.number_input("ระยะความยาวช่องสูงสุดป้องกันการแอ่นตัว (Max Span) (mm)", value=160.0, step=10.0, help="หากช่องกว้างเกินค่านี้นวัตกรรมจะไม่ยอมรับเพื่อป้องกัน BCT Buckling")
 
-# --- DYNAMIC SOLVER ENGINE WITH STRUCTURAL GUARDRAILS ---
+# --- DYNAMIC SOLVER ENGINE WITH DYNAMIC GUARDRAIL SCALING ---
 def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_limit):
     all_dims = [pw, pl, ph]
     unique_orientations = set(itertools.permutations(all_dims))
@@ -100,9 +100,13 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
         target_w = ew + clearance
         target_l = el + clearance
 
-        # คำนวณ Effective Max Span ปรับตามขนาดชิ้นงานจริง
-        eff_max_span_x = max(max_span_limit, target_l)
-        eff_max_span_y = max(max_span_limit, target_w)
+        # Dynamic Guardrail Scaling: คำนวณขีดจำกัดความกว้างช่องให้สอดคล้องกับขนาดชิ้นงานและการวางเบียด
+        if "Standard 1 PC/Slot" in mode:
+            eff_max_span_x = max(max_span_limit, target_l)
+            eff_max_span_y = max(max_span_limit, target_w)
+        else:
+            eff_max_span_x = max(max_span_limit, target_l * max_pcs_per_axis)
+            eff_max_span_y = max(max_span_limit, target_w * max_pcs_per_axis)
 
         # สร้าง Subset ร่องจากพิกัดของความสูงนั้นๆ จริง
         subsets_x = []
@@ -145,7 +149,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
                     if span_x < target_l:
                         all_slots_valid = False
                         break
-                    # บังคับโครงสร้าง Grid: ห้ามให้ระยะ Span กว้างเกินกำหนดเพื่อป้องกัน BCT Collapse
                     if "Standard 1 PC/Slot" not in mode and span_x > eff_max_span_x:
                         all_slots_valid = False
                         break
@@ -159,7 +162,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
                     if span_y < target_w:
                         all_slots_valid = False
                         break
-                    # บังคับโครงสร้าง Grid: ห้ามให้ระยะ Span กว้างเกินกำหนดเพื่อป้องกัน BCT Collapse
                     if "Standard 1 PC/Slot" not in mode and span_y > eff_max_span_y:
                         all_slots_valid = False
                         break
@@ -167,7 +169,7 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
                 if not all_slots_valid:
                     continue
 
-                # --- 2. SLOT CALCULATIONS WITH GROUPING CAP ---
+                # --- 2. SLOT CAPACITY CALCULATIONS ---
                 valid_slots = []
                 
                 for i in range(len(x_bounds) - 1):
@@ -180,7 +182,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
                             qty_in_slot_y = 1
                             qty_in_slot_z = 1
                         else:
-                            # ล็อคจำนวนชิ้นสูงสุดต่อแกนตาม Structural Guardrails
                             calc_x = max(1, int(slot_w_size // target_l))
                             calc_y = max(1, int(slot_h_size // target_w))
                             qty_in_slot_x = min(max_pcs_per_axis, calc_x)
@@ -215,7 +216,6 @@ def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_
                     qty_box = total_pcs_in_slot_all * layers
                     base_qty_box = len(valid_slots) * layers 
 
-                    # คำนวณระดับความสมมาตร/ระยะห่างจากจุดศูนย์กลางกล่อง
                     grid_cx = (x_bounds[0] + x_bounds[-1]) / 2.0
                     grid_cy = (y_bounds[0] + y_bounds[-1]) / 2.0
                     center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
@@ -272,10 +272,8 @@ def draw_asymmetric_svg(opt):
     svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
     svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
     
-    # วาดกรอบนอกสุดของแผ่นพาร์ติชัน
     svg += f'<rect x="{pad_x + x_start_pad*scale}" y="{pad_y + y_start_pad*scale}" width="{p_w_rect*scale}" height="{p_h_rect*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    # เส้นไกด์ไลน์ร่องขัดมาตรฐาน
     grooves_x_ref = GROOVE_X_111 if opt["part_height"] == 111.0 else GROOVE_X_225
     grooves_y_ref = GROOVE_Y_111 if opt["part_height"] == 111.0 else GROOVE_Y_225
 
@@ -286,7 +284,6 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (sy * scale)
         svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
 
-    # วาดแผ่นกั้นจริง (Solid Divider เส้นสีแดง)
     for vx in ax:
         cx = pad_x + (vx * scale)
         svg += f'<line x1="{cx}" y1="{pad_y + y_start_pad*scale}" x2="{cx}" y2="{pad_y + y_end_pad*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
@@ -294,7 +291,6 @@ def draw_asymmetric_svg(opt):
         cy = pad_y + (vy * scale)
         svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
         
-    # วาดชิ้นงานลงในช่องสล็อต
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
@@ -349,7 +345,6 @@ def draw_side_view_svg(opt):
     for layer_idx in range(opt["layers"]):
         level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
         
-        # แผ่นรองขอบแบน (Corrugated Pad)
         svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{level_y_start}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
         svg += f'<text x="{pad_x + 15}" y="{level_y_start + pad_thickness - 2}" font-family="system-ui, sans-serif" font-size="9" fill="#475569">Pad</text>'
         
