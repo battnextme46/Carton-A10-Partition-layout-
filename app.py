@@ -1,528 +1,1111 @@
-import streamlit as st
-import math
 import itertools
+import math
+import streamlit as st
 
-# ตั้งค่าหน้าเว็บให้แสดงผลเต็มหน้าจอ
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+APP_VERSION = "V0.1"
+APP_NAME = "Carton A10 Partition Layout Optimizer"
+MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
+
 st.set_page_config(
-    page_title="Carton A10 Partition Optimizer",
+    page_title=APP_NAME,
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-st.title("📦 Auto-Select Partition Layout Design with Carton A10")
-st.write("ระบบวิเคราะห์และคัดเลือกพาร์ติชันแบบอสมมาตร พร้อมโครงสร้าง Grid เสริมความแข็งแรง (Structural Guardrails) ป้องกันช่องยักษ์และการกระแทกของชิ้นงาน")
+# ============================================================
+# FIXED CARTON / PARTITION CONFIGURATION
+# ============================================================
+# Master Carton A10
+CARTON_OD_L = 602.0
+CARTON_OD_W = 414.0
+CARTON_OD_H = 270.0
 
-# --- CONFIGURATION ENGINE (พิกัดร่องขัดพาร์ติชันมาตรฐานกระดาษแยกตามความสูง) ---
 CARTON_L = 592.0
 CARTON_W = 404.0
 CARTON_H = 255.0
 
-CARTON_CX = CARTON_L / 2.0  # 296.0 mm
-CARTON_CY = CARTON_W / 2.0  # 202.0 mm
+CARTON_CX = CARTON_L / 2.0
+CARTON_CY = CARTON_W / 2.0
 
-# พิกัดสำหรับพาร์ติชันความสูง 111 mm (ระยะห่างร่อง 135 mm ตาม Drawing)
+# Standard paper pad used by the current A10 packing system
+PAD_L = 574.0
+PAD_W = 394.0
+PAD_T = 3.0
+
+# Groove positions from the existing A10 partition system.
+# IMPORTANT: these positions represent actual partition-sheet locations.
 GROOVE_X_111 = [12.0, 152.0, 292.0, 432.0, 572.0]
 GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
-# พิกัดสำหรับพาร์ติชันความสูง 225 mm (ฟัน 120 mm)
 GROOVE_X_225 = [56.0, 176.0, 296.0, 416.0, 536.0]
 GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("📐 1. ขนาดผลิตภัณฑ์ (Product Dimension)")
-p_w = st.sidebar.number_input("ความกว้างชิ้นงาน (Width - W) (mm)", value=135.0, step=1.0)
-p_l = st.sidebar.number_input("ความยาวชิ้นงาน (Length - L) (mm)", value=160.0, step=1.0)
-p_h = st.sidebar.number_input("ความหนาชิ้นงาน (Height/Thickness - H) (mm)", value=30.0, step=1.0)
+# Outer usable envelope for the partition system / pad zone.
+PARTITION_SYSTEM = {
+    111.0: {
+        "groove_x": GROOVE_X_111,
+        "groove_y": GROOVE_Y_111,
+        "x_pad_start": 4.0,
+        "x_pad_end": 588.0,
+        "y_pad_start": 5.5,
+        "y_pad_end": 398.5,
+        "layers": 2,
+    },
+    225.0: {
+        "groove_x": GROOVE_X_225,
+        "groove_y": GROOVE_Y_225,
+        "x_pad_start": 16.0,
+        "x_pad_end": 576.0,
+        "y_pad_start": 5.5,
+        "y_pad_end": 398.5,
+        "layers": 1,
+    },
+}
 
-st.sidebar.header("🛡️ 2. ค่าเผื่อสล็อต (Clearance Margin)")
-clearance = st.sidebar.slider("ระยะเผื่อช่อง/ความหนาถุง ESD (Clearance) (mm)", 1.0, 15.0, 10.0, step=0.5)
+# ============================================================
+# SMALL UI HELPERS
+# ============================================================
+def fmt_num(v):
+    if abs(v - round(v)) < 1e-9:
+        return str(int(round(v)))
+    return f"{v:.1f}"
 
-st.sidebar.header("🔄 3. เงื่อนไขจำนวนชิ้นงานต่อช่อง (Slot Capacity)")
-packing_mode = st.sidebar.radio(
-    "รูปแบบความจุผลิตภัณฑ์ต่อ 1 ช่องสล็อต:",
-    options=[
-        "1) วาง 1 ชิ้นต่อช่องปกติ (Standard 1 PC/Slot)",
-        "2) วางข้างกัน/เบียดกันแนวราบ (Multi-Fit: Side-by-Side)",
-        "3) วางข้างกันและสามารถวางทับกันได้ (Stack-Fit: Side-by-Side & Stacked)"
-    ]
+
+def badge(text, tone="neutral"):
+    palettes = {
+        "neutral": ("#0f172a", "#e2e8f0", "#334155"),
+        "good": ("#052e16", "#dcfce7", "#16a34a"),
+        "warn": ("#422006", "#fef3c7", "#d97706"),
+        "info": ("#082f49", "#e0f2fe", "#0284c7"),
+        "bad": ("#450a0a", "#fee2e2", "#dc2626"),
+    }
+    fg, bg, border = palettes[tone]
+    return (
+        f'<span style="display:inline-block;padding:3px 9px;margin-right:5px;'
+        f'border-radius:999px;border:1px solid {border};background:{bg};'
+        f'color:{fg};font-size:11px;font-weight:700;">{text}</span>'
+    )
+
+
+# ============================================================
+# SIDEBAR INPUTS
+# ============================================================
+st.sidebar.header("📐 1. Product Dimension (mm)")
+p_w = st.sidebar.number_input(
+    "ความกว้างชิ้นงาน (Width - W)",
+    min_value=1.0,
+    value=135.0,
+    step=1.0,
+)
+p_l = st.sidebar.number_input(
+    "ความยาวชิ้นงาน (Length - L)",
+    min_value=1.0,
+    value=160.0,
+    step=1.0,
+)
+p_h = st.sidebar.number_input(
+    "ความหนา / ความสูงชิ้นงาน (Height - H)",
+    min_value=1.0,
+    value=30.0,
+    step=1.0,
 )
 
-st.sidebar.header("🏗️ 4. ข้อจำกัดความแข็งแรงโครงสร้าง (Structural Guardrails)")
-max_pcs_axis = st.sidebar.slider("จำนวนชิ้นงานสูงสุดต่อแกนใน 1 ช่อง (Max Pcs/Axis)", 1, 4, 2, help="เช่น ปรับเป็น 2 หมายถึง วางเบียดกันได้ไม่เกิน 2x2 = 4 ชิ้นต่อช่อง")
-max_slot_span = st.sidebar.number_input("ระยะความยาวช่องสูงสุดป้องกันการแอ่นตัว (Max Span) (mm)", value=160.0, step=10.0, help="หากช่องกว้างเกินค่านี้นวัตกรรมจะไม่ยอมรับเพื่อป้องกัน BCT Buckling")
+st.sidebar.header("🧭 2. Allowed Product Orientation")
+st.sidebar.checkbox(
+    "H-Up — การวางปกติ (Recommended Default)",
+    value=True,
+    disabled=True,
+    help="H-Up ถูกเปิดใช้งานเสมอเป็น Normal Reference",
+)
+allow_l_up = st.sidebar.checkbox(
+    "L-Up — อนุญาตให้หันด้าน L ขึ้น",
+    value=False,
+    help="เปิดเมื่อ Product / Customer / Label / Handling requirement อนุญาตจริง",
+)
+allow_w_up = st.sidebar.checkbox(
+    "W-Up — อนุญาตให้หันด้าน W ขึ้น",
+    value=False,
+    help="เปิดเมื่อ Product / Customer / Label / Handling requirement อนุญาตจริง",
+)
 
-# --- DYNAMIC SOLVER ENGINE WITH DYNAMIC GUARDRAIL SCALING ---
-def find_asymmetric_optimal_layout(pw, pl, ph, mode, max_pcs_per_axis, max_span_limit):
-    all_dims = [pw, pl, ph]
-    unique_orientations = set(itertools.permutations(all_dims))
-    
-    orientations_3d = []
-    for perm in unique_orientations:
-        w_rot, l_rot, h_rot = perm
-        is_fixed_h = (h_rot == ph)
-        orientations_3d.append({
-            "flat_w": w_rot,
-            "flat_l": l_rot,
-            "vert_h": h_rot,
-            "label": f"{int(w_rot)} x {int(l_rot)} x {int(h_rot)}",
-            "is_fixed_h": is_fixed_h
-        })
+if allow_l_up or allow_w_up:
+    st.sidebar.warning(
+        "⚠️ Non-normal orientation ถูกเปิดใช้งาน กรุณายืนยัน Product / Customer / Label / Handling requirement ก่อนนำไปใช้จริง"
+    )
 
-    best_options = []
+st.sidebar.header("🛡️ 3. Slot Clearance")
+clearance = st.sidebar.slider(
+    "ระยะเผื่อช่อง / ESD bag allowance (mm)",
+    min_value=0.0,
+    max_value=20.0,
+    value=10.0,
+    step=0.5,
+)
 
-    for orient in orientations_3d:
+st.sidebar.header("📦 4. Slot Capacity Mode")
+packing_mode = st.sidebar.radio(
+    "รูปแบบการจัดชิ้นงานต่อ 1 slot",
+    options=[
+        "1) Standard 1 PC/Slot",
+        "2) Multi-Fit: Side-by-Side",
+        "3) Stack-Fit: Side-by-Side & Stacked",
+    ],
+)
+
+max_pcs_axis = st.sidebar.slider(
+    "Max Pcs / Axis ใน 1 slot",
+    min_value=1,
+    max_value=4,
+    value=2,
+    help="ใช้กับ Multi-Fit / Stack-Fit เพื่อจำกัดจำนวนชิ้นงานต่อแกนใน 1 slot",
+)
+
+st.sidebar.header("🏗️ 5. Partition Structural Guardrail")
+max_slot_span = st.sidebar.number_input(
+    "Baseline Unsupported Slot Span (mm)",
+    min_value=50.0,
+    value=160.0,
+    step=10.0,
+    help=(
+        "Geometry-based engineering screening สำหรับ span ระหว่าง partition ที่ตัดกัน "
+        "ไม่ใช่การคำนวณ BCT / ECT strength"
+    ),
+)
+
+span_mode = st.sidebar.selectbox(
+    "Span Guardrail Mode",
+    options=[
+        "Dynamic — Recommended",
+        "Strict",
+    ],
+    index=0,
+    help=(
+        "Dynamic จะขยาย span limit ตาม product footprint / multi-fit requirement เพื่อไม่ตัด layout ที่จำเป็นออกโดยไม่สมเหตุผล; "
+        "Strict จะใช้ค่าที่กำหนดเป็นหลัก"
+    ),
+)
+
+st.sidebar.info(
+    "✅ V0.1 เพิ่ม Partition Topology Validation: reject layout แบบ 1 giant cell และต้องมี partition สองทิศทางประกอบเป็น interlocked grid"
+)
+
+# ============================================================
+# ORIENTATION ENGINE — deterministic and axis-aware
+# ============================================================
+def build_orientations(pw, pl, ph, allow_l, allow_w):
+    """Return deterministic 6-way orientations while keeping original axis identity."""
+    return [
+        {
+            "orientation_id": "H_WL",
+            "up_axis": "H",
+            "flat_w": pw,
+            "flat_l": pl,
+            "vert_h": ph,
+            "floor_axis_1": "W",
+            "floor_axis_2": "L",
+            "allowed": True,
+            "normal": True,
+            "priority": 3,
+        },
+        {
+            "orientation_id": "H_LW",
+            "up_axis": "H",
+            "flat_w": pl,
+            "flat_l": pw,
+            "vert_h": ph,
+            "floor_axis_1": "L",
+            "floor_axis_2": "W",
+            "allowed": True,
+            "normal": True,
+            "priority": 3,
+        },
+        {
+            "orientation_id": "L_WH",
+            "up_axis": "L",
+            "flat_w": pw,
+            "flat_l": ph,
+            "vert_h": pl,
+            "floor_axis_1": "W",
+            "floor_axis_2": "H",
+            "allowed": allow_l,
+            "normal": False,
+            "priority": 1,
+        },
+        {
+            "orientation_id": "L_HW",
+            "up_axis": "L",
+            "flat_w": ph,
+            "flat_l": pw,
+            "vert_h": pl,
+            "floor_axis_1": "H",
+            "floor_axis_2": "W",
+            "allowed": allow_l,
+            "normal": False,
+            "priority": 1,
+        },
+        {
+            "orientation_id": "W_LH",
+            "up_axis": "W",
+            "flat_w": pl,
+            "flat_l": ph,
+            "vert_h": pw,
+            "floor_axis_1": "L",
+            "floor_axis_2": "H",
+            "allowed": allow_w,
+            "normal": False,
+            "priority": 1,
+        },
+        {
+            "orientation_id": "W_HL",
+            "up_axis": "W",
+            "flat_w": ph,
+            "flat_l": pl,
+            "vert_h": pw,
+            "floor_axis_1": "H",
+            "floor_axis_2": "L",
+            "allowed": allow_w,
+            "normal": False,
+            "priority": 1,
+        },
+    ]
+
+
+def orientation_label(orient):
+    return (
+        f"{fmt_num(orient['flat_w'])} × {fmt_num(orient['flat_l'])} × {fmt_num(orient['vert_h'])} mm"
+    )
+
+
+# ============================================================
+# PARTITION / TOPOLOGY HELPERS
+# ============================================================
+def select_partition_system(vertical_h, clr):
+    if vertical_h + clr <= 111.0:
+        return 111.0, PARTITION_SYSTEM[111.0]
+    if vertical_h + clr <= 225.0:
+        return 225.0, PARTITION_SYSTEM[225.0]
+    return None, None
+
+
+def generate_partition_subsets(grooves):
+    """
+    A valid candidate always retains the first and last partition sheets.
+    Inner groove sheets may be selected or omitted.
+    """
+    first = grooves[0]
+    last = grooves[-1]
+    inner = grooves[1:-1]
+    subsets = []
+    for r in range(len(inner) + 1):
+        for comb in itertools.combinations(inner, r):
+            subsets.append([first] + list(comb) + [last])
+    return subsets
+
+
+def topology_validation(x_dividers, y_dividers):
+    """
+    Engineering topology rule for A10 partition structure.
+
+    - partition sheets must exist in BOTH directions
+    - at least one actual cross-intersection network must exist
+    - reject a single giant 1x1 cell
+    - allow 1xN or Nx1 grids when N >= 2 because both divider families still interlock
+    """
+    if len(x_dividers) < 2 or len(y_dividers) < 2:
+        return False, "Missing one partition direction"
+
+    cells_x = len(x_dividers) - 1
+    cells_y = len(y_dividers) - 1
+    total_cells = cells_x * cells_y
+    intersections = len(x_dividers) * len(y_dividers)
+
+    if total_cells < 2:
+        return False, "Single giant cell is not accepted"
+
+    if intersections < 6:
+        return False, "Insufficient interlocked grid intersections"
+
+    return True, "Interlocked grid"
+
+
+def effective_span_limits(target_l, target_w, mode, max_pcs_per_axis, baseline, guardrail_mode):
+    """
+    Return X/Y span limits. X spans are evaluated against product flat-L,
+    Y spans against product flat-W, matching the existing A10 solver convention.
+    """
+    if "Standard 1 PC/Slot" in mode:
+        pcs_factor = 2.0
+    else:
+        pcs_factor = float(max_pcs_per_axis)
+
+    if guardrail_mode.startswith("Dynamic"):
+        eff_x = max(baseline, target_l * pcs_factor)
+        eff_y = max(baseline, target_w * pcs_factor)
+    else:
+        # Strict still must permit the minimum product footprint itself.
+        eff_x = max(baseline, target_l)
+        eff_y = max(baseline, target_w)
+
+    return eff_x, eff_y
+
+
+def span_stats(bounds):
+    spans = [bounds[i + 1] - bounds[i] for i in range(len(bounds) - 1)]
+    if not spans:
+        return 0.0, 0.0, 0.0
+    return min(spans), max(spans), (max(spans) - min(spans))
+
+
+# ============================================================
+# SOLVER
+# ============================================================
+@st.cache_data(show_spinner=False)
+def solve_a10_partition_layouts(
+    pw,
+    pl,
+    ph,
+    clr,
+    mode,
+    max_pcs_per_axis,
+    max_span_limit,
+    guardrail_mode,
+    allow_l,
+    allow_w,
+):
+    orientations = build_orientations(pw, pl, ph, allow_l, allow_w)
+    options = []
+    rejected_topology = 0
+    rejected_span = 0
+    rejected_fit = 0
+
+    for orient in orientations:
         ew = orient["flat_w"]
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        # เลือกใช้ขนาดร่องขัดและระยะขอบนอกตามเงื่อนไขความสูง Partition
-        if eh + clearance <= 111.0:
-            part_height = 111.0
-            layers = 2
-            groove_x_all = GROOVE_X_111
-            groove_y_all = GROOVE_Y_111
-            x_start_pad = 4.0
-            x_end_pad = 588.0
-            y_start_pad = 5.5
-            y_end_pad = 398.5
-        elif eh + clearance <= 225.0:
-            part_height = 225.0
-            layers = 1
-            groove_x_all = GROOVE_X_225
-            groove_y_all = GROOVE_Y_225
-            x_start_pad = 16.0
-            x_end_pad = 576.0
-            y_start_pad = 5.5
-            y_end_pad = 398.5
-        else:
+        part_height, system = select_partition_system(eh, clr)
+        if system is None:
             continue
 
-        target_w = ew + clearance
-        target_l = el + clearance
+        layers = system["layers"]
+        groove_x = system["groove_x"]
+        groove_y = system["groove_y"]
 
-        # Dynamic Guardrail Scaling: คำนวณขีดจำกัดความกว้างช่องให้สอดคล้องกับขนาดชิ้นงานและการวางเบียด
-        if "Standard 1 PC/Slot" in mode:
-            eff_max_span_x = max(max_span_limit, target_l)
-            eff_max_span_y = max(max_span_limit, target_w)
-        else:
-            eff_max_span_x = max(max_span_limit, target_l * max_pcs_per_axis)
-            eff_max_span_y = max(max_span_limit, target_w * max_pcs_per_axis)
+        target_w = ew + clr
+        target_l = el + clr
 
-        # สร้าง Subset ร่องจากพิกัดของความสูงนั้นๆ จริง
-        subsets_x = []
-        inner_x = groove_x_all[1:-1]
-        for r in range(0, len(inner_x) + 1):
-            for comb in itertools.combinations(inner_x, r):
-                subsets_x.append([groove_x_all[0]] + list(comb) + [groove_x_all[-1]])
+        eff_span_x, eff_span_y = effective_span_limits(
+            target_l,
+            target_w,
+            mode,
+            max_pcs_per_axis,
+            max_span_limit,
+            guardrail_mode,
+        )
 
-        subsets_y = []
-        inner_y = groove_y_all[1:-1]
-        for r in range(0, len(inner_y) + 1):
-            for comb in itertools.combinations(inner_y, r):
-                subsets_y.append([groove_y_all[0]] + list(comb) + [groove_y_all[-1]])
-                
-        unique_subsets_y = []
-        y_presets = [
-            groove_y_all, 
-            [19.5, 110.75, 202.0, 293.25, 384.5], 
-            [19.5, 202.0, 384.5], 
-        ]
-        for s in y_presets + subsets_y:
-            s_sorted = sorted(s)
-            if s_sorted[0] != groove_y_all[0]: s_sorted.insert(0, groove_y_all[0])
-            if s_sorted[-1] != groove_y_all[-1]: s_sorted.append(groove_y_all[-1])
-            s_sorted = sorted(list(set(s_sorted)))
-            if s_sorted not in unique_subsets_y:
-                unique_subsets_y.append(s_sorted)
+        subsets_x = generate_partition_subsets(groove_x)
+        subsets_y = generate_partition_subsets(groove_y)
 
-        for ax in subsets_x:
-            for ay in unique_subsets_y:
-                x_bounds = sorted(ax)
-                y_bounds = sorted(ay)
-
-                # --- 1. STRICT VALIDITY & STRUCTURAL GRID FILTER ---
-                all_slots_valid = True
-                
-                # ตรวจสอบแกน X
-                for i in range(len(x_bounds) - 1):
-                    span_x = x_bounds[i+1] - x_bounds[i]
-                    if span_x < target_l:
-                        all_slots_valid = False
-                        break
-                    if "Standard 1 PC/Slot" not in mode and span_x > eff_max_span_x:
-                        all_slots_valid = False
-                        break
-
-                if not all_slots_valid:
+        for x_dividers in subsets_x:
+            for y_dividers in subsets_y:
+                topo_ok, topo_note = topology_validation(x_dividers, y_dividers)
+                if not topo_ok:
+                    rejected_topology += 1
                     continue
 
-                # ตรวจสอบแกน Y
-                for j in range(len(y_bounds) - 1):
-                    span_y = y_bounds[j+1] - y_bounds[j]
-                    if span_y < target_w:
-                        all_slots_valid = False
-                        break
-                    if "Standard 1 PC/Slot" not in mode and span_y > eff_max_span_y:
-                        all_slots_valid = False
-                        break
+                x_spans = [x_dividers[i + 1] - x_dividers[i] for i in range(len(x_dividers) - 1)]
+                y_spans = [y_dividers[i + 1] - y_dividers[i] for i in range(len(y_dividers) - 1)]
 
-                if not all_slots_valid:
+                # Every cell must physically fit at least one product footprint.
+                if any(span < target_l for span in x_spans) or any(span < target_w for span in y_spans):
+                    rejected_fit += 1
                     continue
 
-                # --- 2. SLOT CAPACITY CALCULATIONS ---
+                # V0.1: span guardrail is now evaluated for every packing mode.
+                if any(span > eff_span_x for span in x_spans) or any(span > eff_span_y for span in y_spans):
+                    rejected_span += 1
+                    continue
+
                 valid_slots = []
-                
-                for i in range(len(x_bounds) - 1):
-                    for j in range(len(y_bounds) - 1):
-                        slot_w_size = x_bounds[i+1] - x_bounds[i]
-                        slot_h_size = y_bounds[j+1] - y_bounds[j]
+
+                for i in range(len(x_dividers) - 1):
+                    for j in range(len(y_dividers) - 1):
+                        slot_x = x_dividers[i + 1] - x_dividers[i]
+                        slot_y = y_dividers[j + 1] - y_dividers[j]
 
                         if "Standard 1 PC/Slot" in mode:
-                            qty_in_slot_x = 1
-                            qty_in_slot_y = 1
-                            qty_in_slot_z = 1
+                            qty_x = 1
+                            qty_y = 1
+                            qty_z = 1
                         else:
-                            calc_x = max(1, int(slot_w_size // target_l))
-                            calc_y = max(1, int(slot_h_size // target_w))
-                            qty_in_slot_x = min(max_pcs_per_axis, calc_x)
-                            qty_in_slot_y = min(max_pcs_per_axis, calc_y)
-                            
+                            qty_x = min(max_pcs_per_axis, max(1, int(slot_x // target_l)))
+                            qty_y = min(max_pcs_per_axis, max(1, int(slot_y // target_w)))
+
                             if "Stack-Fit" in mode:
-                                if part_height >= eh:
-                                    qty_in_slot_z = max(1, int((part_height - clearance) // eh))
-                                else:
-                                    qty_in_slot_z = 1
+                                usable_vertical = max(0.0, part_height - clr)
+                                qty_z = max(1, int(usable_vertical // eh))
                             else:
-                                qty_in_slot_z = 1
-                        
-                        pcs_in_this_slot = qty_in_slot_x * qty_in_slot_y * qty_in_slot_z
-                        
-                        valid_slots.append({
-                            "col_idx": i,
-                            "row_idx": j,
-                            "x_start": x_bounds[i],
-                            "x_end": x_bounds[i+1],
-                            "y_start": y_bounds[j],
-                            "y_end": y_bounds[j+1],
-                            "qty_x": qty_in_slot_x,
-                            "qty_y": qty_in_slot_y,
-                            "qty_z": qty_in_slot_z,
-                            "pcs_per_slot": pcs_in_this_slot
-                        })
+                                qty_z = 1
 
-                if len(valid_slots) > 0:
-                    total_pcs_in_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
-                    total_pcs_in_slot_all = sum(s["pcs_per_slot"] for s in valid_slots)
-                    qty_box = total_pcs_in_slot_all * layers
-                    base_qty_box = len(valid_slots) * layers 
+                        pcs_slot = qty_x * qty_y * qty_z
+                        valid_slots.append(
+                            {
+                                "col_idx": i,
+                                "row_idx": j,
+                                "x_start": x_dividers[i],
+                                "x_end": x_dividers[i + 1],
+                                "y_start": y_dividers[j],
+                                "y_end": y_dividers[j + 1],
+                                "qty_x": qty_x,
+                                "qty_y": qty_y,
+                                "qty_z": qty_z,
+                                "pcs_per_slot": pcs_slot,
+                            }
+                        )
 
-                    grid_cx = (x_bounds[0] + x_bounds[-1]) / 2.0
-                    grid_cy = (y_bounds[0] + y_bounds[-1]) / 2.0
-                    center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
+                if not valid_slots:
+                    continue
 
-                    best_options.append({
-                        "qty_box": qty_box,
-                        "base_qty_box": base_qty_box, 
-                        "qty_layer": total_pcs_in_layer,
-                        "layers": layers,
-                        "part_height": part_height,
-                        "ax": ax,
-                        "ay": ay,
-                        "x_bounds": [x_start_pad] + ax + [x_end_pad],
-                        "y_bounds": [y_start_pad] + ay + [y_end_pad],
-                        "valid_slots": valid_slots,
-                        "orient_label": orient["label"],
-                        "target_w": target_w,
-                        "target_l": target_l,
-                        "p_w_disp": ew,
-                        "p_l_disp": el,
-                        "p_h_disp": eh,
-                        "total_dividers": len(ax) + len(ay),
-                        "is_fixed_h": orient["is_fixed_h"],
-                        "center_offset": center_offset
-                    })
+                qty_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
+                qty_per_partition_layer = sum(s["pcs_per_slot"] for s in valid_slots)
+                qty_box = qty_per_partition_layer * layers
+                base_slots_layer = len(valid_slots)
 
-    return best_options
+                min_x_span, max_x_span, var_x = span_stats(x_dividers)
+                min_y_span, max_y_span, var_y = span_stats(y_dividers)
+                span_ratio = max(
+                    max_x_span / eff_span_x if eff_span_x > 0 else 999,
+                    max_y_span / eff_span_y if eff_span_y > 0 else 999,
+                )
+                slot_variation = var_x + var_y
 
-options = find_asymmetric_optimal_layout(p_w, p_l, p_h, packing_mode, max_pcs_axis, max_slot_span)
+                grid_cx = (x_dividers[0] + x_dividers[-1]) / 2.0
+                grid_cy = (y_dividers[0] + y_dividers[-1]) / 2.0
+                center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
 
-# --- SVG TOP VIEW RENDERER ---
-def draw_asymmetric_svg(opt):
-    x_bounds = opt["x_bounds"]
-    y_bounds = opt["y_bounds"]
-    ax = opt["ax"]
-    ay = opt["ay"]
+                envelope_area = max(
+                    1.0,
+                    (x_dividers[-1] - x_dividers[0]) * (y_dividers[-1] - y_dividers[0]),
+                )
+                product_area_layer = qty_layer * ew * el
+                area_occupancy = min(100.0, (product_area_layer / envelope_area) * 100.0)
+
+                top_gap = part_height - (eh * valid_slots[0]["qty_z"])
+                total_used_h = (part_height + PAD_T) * layers + PAD_T
+                carton_top_air_gap = CARTON_H - total_used_h
+
+                option = {
+                    "orientation_id": orient["orientation_id"],
+                    "up_axis": orient["up_axis"],
+                    "floor_axis_1": orient["floor_axis_1"],
+                    "floor_axis_2": orient["floor_axis_2"],
+                    "allowed": orient["allowed"],
+                    "normal": orient["normal"],
+                    "orientation_priority": orient["priority"],
+                    "orient_label": orientation_label(orient),
+                    "flat_w": ew,
+                    "flat_l": el,
+                    "vert_h": eh,
+                    "p_w_disp": ew,
+                    "p_l_disp": el,
+                    "p_h_disp": eh,
+                    "target_w": target_w,
+                    "target_l": target_l,
+                    "part_height": part_height,
+                    "layers": layers,
+                    "x_dividers": list(x_dividers),
+                    "y_dividers": list(y_dividers),
+                    # Backward-friendly aliases for renderer / BOM semantics.
+                    "ax": list(x_dividers),
+                    "ay": list(y_dividers),
+                    "x_bounds": [system["x_pad_start"]] + list(x_dividers) + [system["x_pad_end"]],
+                    "y_bounds": [system["y_pad_start"]] + list(y_dividers) + [system["y_pad_end"]],
+                    "valid_slots": valid_slots,
+                    "base_slots_layer": base_slots_layer,
+                    "base_qty_box": base_slots_layer * layers,
+                    "qty_layer": qty_layer,
+                    "qty_partition_layer": qty_per_partition_layer,
+                    "qty_box": qty_box,
+                    "total_dividers_per_layer": len(x_dividers) + len(y_dividers),
+                    "short_dividers_per_layer": len(x_dividers),
+                    "long_dividers_per_layer": len(y_dividers),
+                    "topology_note": topo_note,
+                    "eff_span_x": eff_span_x,
+                    "eff_span_y": eff_span_y,
+                    "max_span_x": max_x_span,
+                    "max_span_y": max_y_span,
+                    "span_ratio": span_ratio,
+                    "slot_variation": slot_variation,
+                    "center_offset": center_offset,
+                    "area_occupancy": area_occupancy,
+                    "top_gap": top_gap,
+                    "carton_top_air_gap": carton_top_air_gap,
+                }
+                options.append(option)
+
+    debug = {
+        "rejected_topology": rejected_topology,
+        "rejected_span": rejected_span,
+        "rejected_fit": rejected_fit,
+        "evaluated_valid": len(options),
+    }
+    return options, debug
+
+
+# ============================================================
+# OPTION RANKING / DEDUPLICATION
+# ============================================================
+def option_rank(opt):
+    """
+    Capacity first, then prefer normal orientation on a tie, then structure,
+    then lower BOM complexity.
+    """
+    return (
+        opt["qty_box"],
+        opt["orientation_priority"],
+        -opt["vert_h"],
+        opt["qty_layer"],
+        -opt["span_ratio"],
+        -opt["slot_variation"],
+        -opt["total_dividers_per_layer"],
+        opt["area_occupancy"],
+        -opt["center_offset"],
+    )
+
+
+def dedupe_options(options):
+    """Keep meaningful engineering scenarios and remove near-duplicate grids."""
+    best_by_key = {}
+    for opt in options:
+        key = (
+            opt["orientation_id"],
+            opt["part_height"],
+            opt["qty_box"],
+            opt["qty_layer"],
+            opt["layers"],
+            opt["base_slots_layer"],
+            opt["short_dividers_per_layer"],
+            opt["long_dividers_per_layer"],
+        )
+        if key not in best_by_key or option_rank(opt) > option_rank(best_by_key[key]):
+            best_by_key[key] = opt
+    return sorted(best_by_key.values(), key=option_rank, reverse=True)
+
+
+# ============================================================
+# SVG TOP VIEW
+# ============================================================
+def draw_top_view_svg(opt):
+    x_dividers = opt["x_dividers"]
+    y_dividers = opt["y_dividers"]
     valid_slots = opt["valid_slots"]
-    
-    scale = 1.4
-    pad_x = 60
-    pad_y = 60
-    
-    view_w = (CARTON_L * scale) + (pad_x * 2)
-    view_h = (CARTON_W * scale) + (pad_y * 2)
-    
-    x_start_pad = x_bounds[0]
-    x_end_pad = x_bounds[-1]
-    y_start_pad = y_bounds[0]
-    y_end_pad = y_bounds[-1]
-    p_w_rect = x_end_pad - x_start_pad
-    p_h_rect = y_end_pad - y_start_pad
-    
-    svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
-    svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale}" height="{CARTON_W * scale}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">TOP VIEW: CARTON A10 ({int(CARTON_L)}x{int(CARTON_W)} mm)</text>'
-    
-    svg += f'<rect x="{pad_x + x_start_pad*scale}" y="{pad_y + y_start_pad*scale}" width="{p_w_rect*scale}" height="{p_h_rect*scale}" fill="none" stroke="#94a3b8" stroke-dasharray="4,4" stroke-width="1.5" />'
 
-    grooves_x_ref = GROOVE_X_111 if opt["part_height"] == 111.0 else GROOVE_X_225
-    grooves_y_ref = GROOVE_Y_111 if opt["part_height"] == 111.0 else GROOVE_Y_225
+    scale = 1.36
+    pad_x = 64
+    pad_y = 66
 
-    for sx in grooves_x_ref:
-        cx = pad_x + (sx * scale)
-        svg += f'<line x1="{cx}" y1="{pad_y + y_start_pad*scale}" x2="{cx}" y2="{pad_y + y_end_pad*scale}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
-    for sy in grooves_y_ref:
-        cy = pad_y + (sy * scale)
-        svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="3,3" />'
+    view_w = CARTON_L * scale + pad_x * 2
+    view_h = CARTON_W * scale + pad_y * 2
 
-    for vx in ax:
-        cx = pad_x + (vx * scale)
-        svg += f'<line x1="{cx}" y1="{pad_y + y_start_pad*scale}" x2="{cx}" y2="{pad_y + y_end_pad*scale}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
-    for vy in ay:
-        cy = pad_y + (vy * scale)
-        svg += f'<line x1="{pad_x + x_start_pad*scale}" y1="{cy}" x2="{pad_x + x_end_pad*scale}" y2="{cy}" stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
-        
+    system = PARTITION_SYSTEM[opt["part_height"]]
+    x_start_pad = system["x_pad_start"]
+    x_end_pad = system["x_pad_end"]
+    y_start_pad = system["y_pad_start"]
+    y_end_pad = system["y_pad_end"]
+
+    svg = (
+        f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" '
+        f'xmlns="http://www.w3.org/2000/svg" '
+        f'style="background:#fff;border:2px solid #334155;border-radius:12px;">'
+    )
+
+    svg += (
+        f'<text x="{view_w/2}" y="28" font-family="system-ui,sans-serif" '
+        f'font-size="18" font-weight="700" fill="#0f172a" text-anchor="middle">'
+        f'SMART TOP PATTERN — CARTON A10 ({int(CARTON_L)} × {int(CARTON_W)} mm)</text>'
+    )
+
+    svg += (
+        f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L*scale}" height="{CARTON_W*scale}" '
+        f'fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="6" />'
+    )
+
+    svg += (
+        f'<rect x="{pad_x + x_start_pad*scale}" y="{pad_y + y_start_pad*scale}" '
+        f'width="{(x_end_pad-x_start_pad)*scale}" height="{(y_end_pad-y_start_pad)*scale}" '
+        f'fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4,4" />'
+    )
+
+    groove_x = system["groove_x"]
+    groove_y = system["groove_y"]
+
+    # Available groove reference — light green dotted lines.
+    for x in groove_x:
+        px = pad_x + x * scale
+        svg += (
+            f'<line x1="{px}" y1="{pad_y+y_start_pad*scale}" x2="{px}" y2="{pad_y+y_end_pad*scale}" '
+            f'stroke="#22c55e" stroke-width="1" stroke-dasharray="3,3" opacity="0.65" />'
+        )
+    for y in groove_y:
+        py = pad_y + y * scale
+        svg += (
+            f'<line x1="{pad_x+x_start_pad*scale}" y1="{py}" x2="{pad_x+x_end_pad*scale}" y2="{py}" '
+            f'stroke="#22c55e" stroke-width="1" stroke-dasharray="3,3" opacity="0.65" />'
+        )
+
+    # Active partition sheets — red.
+    for x in x_dividers:
+        px = pad_x + x * scale
+        svg += (
+            f'<line x1="{px}" y1="{pad_y+y_start_pad*scale}" x2="{px}" y2="{pad_y+y_end_pad*scale}" '
+            f'stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        )
+    for y in y_dividers:
+        py = pad_y + y * scale
+        svg += (
+            f'<line x1="{pad_x+x_start_pad*scale}" y1="{py}" x2="{pad_x+x_end_pad*scale}" y2="{py}" '
+            f'stroke="#dc2626" stroke-width="4" stroke-linecap="round" />'
+        )
+
+    draw_w = opt["p_l_disp"] * scale
+    draw_h = opt["p_w_disp"] * scale
+
+    # Product placement in every valid slot.
     for slot in valid_slots:
         slot_w = slot["x_end"] - slot["x_start"]
         slot_h = slot["y_end"] - slot["y_start"]
-        
-        draw_w = opt["p_l_disp"] * scale
-        draw_h = opt["p_w_disp"] * scale
-        
-        step_x = (slot_w * scale) / slot["qty_x"]
-        step_y = (slot_h * scale) / slot["qty_y"]
-        
+        step_x = slot_w * scale / slot["qty_x"]
+        step_y = slot_h * scale / slot["qty_y"]
+
         for kx in range(slot["qty_x"]):
             for ky in range(slot["qty_y"]):
-                cx = pad_x + (slot["x_start"] * scale) + (kx * step_x) + (step_x / 2)
-                cy = pad_y + (slot["y_start"] * scale) + (ky * step_y) + (step_y / 2)
-                
-                rect_x = cx - (draw_w / 2)
-                rect_y = cy - (draw_h / 2)
-                
-                svg += f'<rect x="{rect_x + 1}" y="{rect_y + 1}" width="{draw_w - 2}" height="{draw_h - 2}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
-                
+                cx = pad_x + slot["x_start"] * scale + kx * step_x + step_x / 2
+                cy = pad_y + slot["y_start"] * scale + ky * step_y + step_y / 2
+                rx = cx - draw_w / 2
+                ry = cy - draw_h / 2
+                svg += (
+                    f'<rect x="{rx+1}" y="{ry+1}" width="{max(2,draw_w-2)}" height="{max(2,draw_h-2)}" '
+                    f'fill="#fed7aa" stroke="#ea580c" stroke-width="1.25" rx="3" />'
+                )
                 if slot["qty_x"] * slot["qty_y"] <= 4 or (kx == 0 and ky == 0):
-                    text_label = "PCBA" if slot["qty_z"] == 1 else f"PCBA x{slot['qty_z']}"
-                    svg += f'<text x="{cx}" y="{cy + 3}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">{text_label}</text>'
-                    
+                    txt = "Product" if slot["qty_z"] == 1 else f"Product ×{slot['qty_z']}"
+                    svg += (
+                        f'<text x="{cx}" y="{cy+3}" font-family="system-ui,sans-serif" font-size="9" '
+                        f'font-weight="700" fill="#7c2d12" text-anchor="middle">{txt}</text>'
+                    )
+
+    svg += (
+        f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" font-size="11" '
+        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove</text>'
+    )
     svg += '</svg>'
     return svg
 
-# --- SVG SIDE VIEW RENDERER ---
+
+# ============================================================
+# SVG SIDE SECTION
+# ============================================================
 def draw_side_view_svg(opt):
-    scale_x = 1.4  
-    scale_y = 1.8  
-    pad_x = 60
-    pad_y = 60
-    
-    view_w = (CARTON_L * scale_x) + (pad_x * 2)
-    view_h = (CARTON_H * scale_y) + (pad_y * 2)
-    
-    box_h = CARTON_H * scale_y
-    part_h = opt["part_height"] * scale_y
-    prod_h = opt["p_h_disp"] * scale_y
-    pad_thickness = 3.0 * scale_y  
-    
-    x_start_pad = opt["x_bounds"][0]
-    x_end_pad = opt["x_bounds"][-1]
-    p_w_rect = x_end_pad - x_start_pad
-    
-    svg = f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #ffffff; border: 2px solid #334155; border-radius: 12px;">'
-    
-    svg += f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L * scale_x}" height="{box_h}" fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
-    svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y - 20}" font-family="system-ui, sans-serif" font-size="18" font-weight="bold" fill="#0f172a" text-anchor="middle">SIDE VIEW: CARTON A10 (Height: {int(CARTON_H)} mm)</text>'
-    
-    for layer_idx in range(opt["layers"]):
-        level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
-        
-        svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{level_y_start}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
-        svg += f'<text x="{pad_x + 15}" y="{level_y_start + pad_thickness - 2}" font-family="system-ui, sans-serif" font-size="9" fill="#475569">Pad</text>'
-        
-        partition_top_y = level_y_start - part_h
-        
-        for vx in opt["ax"]:
-            cx = pad_x + (vx * scale_x)
-            svg += f'<line x1="{cx}" y1="{level_y_start}" x2="{cx}" y2="{partition_top_y}" stroke="#dc2626" stroke-width="3" />'
-            
-    for layer_idx in range(opt["layers"]):
-        level_y_start = pad_y + box_h - (layer_idx * (part_h + pad_thickness)) - pad_thickness
-        
-        x_bounds = opt["ax"]
-        if len(x_bounds) >= 2:
-            for b_idx in range(len(x_bounds)-1):
-                slot_w = x_bounds[b_idx+1] - x_bounds[b_idx]
-                matching_slot = next((s for s in opt["valid_slots"] if s["col_idx"] == b_idx), None)
-                
-                if matching_slot:
-                    qty_x = matching_slot["qty_x"]
-                    qty_z = matching_slot["qty_z"]
-                    
-                    w_draw = opt["p_l_disp"] * scale_x
-                    
-                    step_x = (slot_w * scale_x) / qty_x
-                    start_slot_x = pad_x + (x_bounds[b_idx] * scale_x)
-                    
-                    for kx in range(qty_x):
-                        cx = start_slot_x + (kx * step_x) + (step_x / 2)
-                        rect_x = cx - (w_draw / 2)
-                        
-                        for kz in range(qty_z):
-                            rect_y = level_y_start - (prod_h * (kz + 1))
-                            
-                            svg += f'<rect x="{rect_x + 1}" y="{rect_y + 1}" width="{w_draw - 2}" height="{prod_h - 2}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
-                            
-                            if kz == qty_z - 1 and kx == 0:
-                                total_prod_h_mm = opt["p_h_disp"] * qty_z
-                                svg += f'<text x="{rect_x + w_draw/2}" y="{rect_y + prod_h/2 + 4}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="#7c2d12" text-anchor="middle">H: {int(total_prod_h_mm)} (x{qty_z})</text>'
-                    
-                    total_h_stacked = opt["p_h_disp"] * qty_z
-                    top_gap = opt["part_height"] - total_h_stacked
-                    if top_gap > 0 and b_idx == len(x_bounds) - 2:
-                        top_rect_y = level_y_start - (prod_h * qty_z)
-                        gap_line_x = pad_x + ((x_bounds[b_idx] + slot_w/2) * scale_x) + ((qty_x * w_draw)/2) + 8
-                        svg += f'<line x1="{gap_line_x}" y1="{top_rect_y}" x2="{gap_line_x}" y2="{level_y_start - part_h}" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2,2" />'
-                        svg += f'<text x="{gap_line_x + 5}" y="{top_rect_y - (top_gap*scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#2563eb">Gap: {int(top_gap)} mm</text>'
+    scale_x = 1.34
+    scale_y = 1.75
+    pad_x = 64
+    pad_y = 65
 
-    top_pad_y = pad_y + box_h - (opt["layers"] * (part_h + pad_thickness)) - pad_thickness
-    svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{top_pad_y}" width="{p_w_rect*scale_x}" height="{pad_thickness}" fill="#cbd5e1" stroke="#94a3b8" />'
-    
-    total_used_h = (opt["part_height"] + 3.0) * opt["layers"] + 3.0
-    remaining_box_air_gap = CARTON_H - total_used_h
-    if remaining_box_air_gap > 0:
-        svg += f'<rect x="{pad_x + x_start_pad*scale_x}" y="{pad_y}" width="{p_w_rect*scale_x}" height="{remaining_box_air_gap * scale_y}" fill="#f1f5f9" opacity="0.6" stroke="#babfc7" stroke-dasharray="4,4"/>'
-        svg += f'<text x="{pad_x + (CARTON_L * scale_x)/2}" y="{pad_y + (remaining_box_air_gap * scale_y)/2 + 4}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold" fill="#64748b" text-anchor="middle">📦 โซนว่างบนสุดกล่องภายนอก (Carton Top Air Gap): {int(remaining_box_air_gap)} mm</text>'
+    view_w = CARTON_L * scale_x + pad_x * 2
+    view_h = CARTON_H * scale_y + pad_y * 2
+
+    box_h = CARTON_H * scale_y
+    part_h_px = opt["part_height"] * scale_y
+    prod_h_px = opt["p_h_disp"] * scale_y
+    pad_t_px = PAD_T * scale_y
+
+    system = PARTITION_SYSTEM[opt["part_height"]]
+    x_start_pad = system["x_pad_start"]
+    x_end_pad = system["x_pad_end"]
+    envelope_w = x_end_pad - x_start_pad
+
+    svg = (
+        f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" '
+        f'xmlns="http://www.w3.org/2000/svg" '
+        f'style="background:#fff;border:2px solid #334155;border-radius:12px;">'
+    )
+
+    svg += (
+        f'<text x="{view_w/2}" y="28" font-family="system-ui,sans-serif" font-size="18" '
+        f'font-weight="700" fill="#0f172a" text-anchor="middle">SIDE SECTION — CARTON A10 HEIGHT {int(CARTON_H)} mm</text>'
+    )
+
+    svg += (
+        f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L*scale_x}" height="{box_h}" '
+        f'fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
+    )
+
+    # Draw partition levels, pads and representative product projection.
+    for layer_idx in range(opt["layers"]):
+        level_bottom = pad_y + box_h - layer_idx * (part_h_px + pad_t_px) - pad_t_px
+
+        svg += (
+            f'<rect x="{pad_x+x_start_pad*scale_x}" y="{level_bottom}" '
+            f'width="{envelope_w*scale_x}" height="{pad_t_px}" fill="#cbd5e1" stroke="#94a3b8" />'
+        )
+
+        partition_top = level_bottom - part_h_px
+        for x in opt["x_dividers"]:
+            px = pad_x + x * scale_x
+            svg += (
+                f'<line x1="{px}" y1="{level_bottom}" x2="{px}" y2="{partition_top}" '
+                f'stroke="#dc2626" stroke-width="3" />'
+            )
+
+        # Use the first row as a representative projection for each column.
+        for col_idx in range(len(opt["x_dividers"]) - 1):
+            matching_slot = next(
+                (s for s in opt["valid_slots"] if s["col_idx"] == col_idx and s["row_idx"] == 0),
+                None,
+            )
+            if matching_slot is None:
+                continue
+
+            slot_left = opt["x_dividers"][col_idx]
+            slot_right = opt["x_dividers"][col_idx + 1]
+            slot_span = slot_right - slot_left
+            qty_x = matching_slot["qty_x"]
+            qty_z = matching_slot["qty_z"]
+            product_w_px = opt["p_l_disp"] * scale_x
+            step_x = slot_span * scale_x / qty_x
+            slot_start_px = pad_x + slot_left * scale_x
+
+            for kx in range(qty_x):
+                cx = slot_start_px + kx * step_x + step_x / 2
+                rx = cx - product_w_px / 2
+
+                for kz in range(qty_z):
+                    ry = level_bottom - prod_h_px * (kz + 1)
+                    svg += (
+                        f'<rect x="{rx+1}" y="{ry+1}" width="{max(2,product_w_px-2)}" '
+                        f'height="{max(2,prod_h_px-2)}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
+                    )
+
+        # Show product-to-partition gap on the last visible column.
+        if opt["top_gap"] > 0:
+            gx = pad_x + (x_end_pad - 25) * scale_x
+            product_top = level_bottom - opt["p_h_disp"] * opt["valid_slots"][0]["qty_z"] * scale_y
+            svg += (
+                f'<line x1="{gx}" y1="{product_top}" x2="{gx}" y2="{partition_top}" '
+                f'stroke="#2563eb" stroke-width="1.4" stroke-dasharray="3,3" />'
+            )
+            svg += (
+                f'<text x="{gx+5}" y="{(product_top+partition_top)/2}" font-family="system-ui,sans-serif" '
+                f'font-size="10" font-weight="700" fill="#2563eb">Slot Top Gap: {fmt_num(opt["top_gap"])} mm</text>'
+            )
+
+    # Top pad
+    top_pad_y = pad_y + box_h - opt["layers"] * (part_h_px + pad_t_px) - pad_t_px
+    svg += (
+        f'<rect x="{pad_x+x_start_pad*scale_x}" y="{top_pad_y}" width="{envelope_w*scale_x}" '
+        f'height="{pad_t_px}" fill="#cbd5e1" stroke="#94a3b8" />'
+    )
+
+    if opt["carton_top_air_gap"] > 0:
+        gap_px = opt["carton_top_air_gap"] * scale_y
+        svg += (
+            f'<rect x="{pad_x+x_start_pad*scale_x}" y="{pad_y}" width="{envelope_w*scale_x}" height="{gap_px}" '
+            f'fill="#f1f5f9" opacity="0.7" stroke="#94a3b8" stroke-dasharray="4,4" />'
+        )
+        svg += (
+            f'<text x="{view_w/2}" y="{pad_y+gap_px/2+4}" font-family="system-ui,sans-serif" font-size="11" '
+            f'font-weight="700" fill="#64748b" text-anchor="middle">Carton Top Air Gap: {fmt_num(opt["carton_top_air_gap"])} mm</text>'
+        )
 
     svg += '</svg>'
     return svg
 
-def render_packing_list(opt):
-    active_x_qty = len(opt["ax"])
-    active_y_qty = len(opt["ay"])
-    layers_count = opt["layers"]
-    paper_pads = layers_count + 1
-    
-    part_l_dim = 584 
-    
-    bom_items = [
-        {"name": "กล่องกระดาษภายนอก (Master Carton A10)", "qty": "1 Pcs", "spec": "OD: 602x414x270 mm | ID: 592x404x255 mm"},
-        {"name": f"แผ่นพาร์ติชันตัวสั้น (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x393)", "qty": f"{active_x_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_x_qty} แผ่นกั้นแนวตั้งต่อชั้น"},
-        {"name": f"แผ่นพาร์ติชันตัวยาว (PARTITION {'111' if opt['part_height'] == 111.0 else '225'}x{part_l_dim})", "qty": f"{active_y_qty * layers_count} Pcs", "spec": f"ใช้จริง {active_y_qty} แผ่นกั้นแนวนอนต่อชั้น"},
-        {"name": "แผ่นกระดาษลูกฟูกรองขอบแบน (Corrugated Paper Pad)", "qty": f"{paper_pads} Pcs", "spec": "394 x 574 mm"},
-        {"name": "ซองพลาสติกกันไฟฟ้าสถิตย์ (ESD Anti-Static Bag)", "qty": f"{opt['qty_box']} Pcs", "spec": "สวมใส่ PCBA ก่อนนำมาบรรจุลงช่องสล็อต"}
+
+# ============================================================
+# BOM
+# ============================================================
+def build_bom(opt):
+    layers = opt["layers"]
+    paper_pads = layers + 1
+    htxt = "111" if opt["part_height"] == 111.0 else "225"
+
+    return [
+        {
+            "name": "Master Carton A10",
+            "qty": "1 Pc",
+            "spec": f"OD {fmt_num(CARTON_OD_L)}×{fmt_num(CARTON_OD_W)}×{fmt_num(CARTON_OD_H)} mm | ID {fmt_num(CARTON_L)}×{fmt_num(CARTON_W)}×{fmt_num(CARTON_H)} mm",
+        },
+        {
+            "name": f"Short Partition — PARTITION {htxt}×393",
+            "qty": f"{opt['short_dividers_per_layer'] * layers} Pcs",
+            "spec": f"{opt['short_dividers_per_layer']} sheet(s) / partition layer × {layers} layer(s)",
+        },
+        {
+            "name": f"Long Partition — PARTITION {htxt}×584",
+            "qty": f"{opt['long_dividers_per_layer'] * layers} Pcs",
+            "spec": f"{opt['long_dividers_per_layer']} sheet(s) / partition layer × {layers} layer(s)",
+        },
+        {
+            "name": "Corrugated Paper Pad",
+            "qty": f"{paper_pads} Pcs",
+            "spec": f"{fmt_num(PAD_W)} × {fmt_num(PAD_L)} mm",
+        },
+        {
+            "name": "ESD Anti-Static Bag",
+            "qty": f"{opt['qty_box']} Pcs",
+            "spec": "1 bag / product unless product packaging specification defines otherwise",
+        },
     ]
-    
-    for item in bom_items:
-        st.markdown(f"""
-        <div style="background-color: #f8fafc; border-left: 6px solid #1e293b; padding: 10px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
+
+
+def render_bom(opt):
+    for item in build_bom(opt):
+        st.markdown(
+            f"""
+            <div style="background:#f8fafc;border-left:5px solid #334155;padding:10px 12px;
+                        border-radius:7px;margin:0 0 8px 0;box-shadow:0 1px 2px rgba(0,0,0,.05);">
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
                 <div>
-                    <div style="font-weight: bold; font-size: 14px; color: #0f172a;">{item['name']}</div>
-                    <div style="font-size: 11px; color: #64748b;">{item['spec']}</div>
+                  <div style="font-weight:800;font-size:14px;color:#0f172a;">{item['name']}</div>
+                  <div style="font-size:11px;color:#64748b;">{item['spec']}</div>
                 </div>
-                <span style="background-color: #1e293b; color: white; padding: 3px 10px; border-radius: 12px; font-weight: bold; font-size: 12px;">{item['qty']}</span>
+                <div style="white-space:nowrap;background:#1e293b;color:white;padding:4px 10px;
+                            border-radius:999px;font-weight:800;font-size:12px;">{item['qty']}</div>
+              </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
 
-# --- MAIN RENDER ---
-if options:
-    fixed_h_options = [o for o in options if o["is_fixed_h"]]
-    fixed_h_options.sort(key=lambda x: (x["qty_box"], x["base_qty_box"], -x["center_offset"], -x["total_dividers"]), reverse=True)
-    
-    overall_options = sorted(options, key=lambda x: (x["qty_box"], x["base_qty_box"], -x["center_offset"], -x["total_dividers"]), reverse=True)
-    
-    best_fixed = fixed_h_options[0] if fixed_h_options else None
-    best_overall = overall_options[0] if overall_options else None
-    
-    has_better_alternative = best_overall and best_fixed and (best_overall["qty_box"] > best_fixed["qty_box"])
 
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.header("1️⃣ Fixed H Layout")
-        if best_fixed:
-            st.success(f"📌 **ทิศทางการจัดวาง:** {best_fixed['orient_label']}")
-            
-            m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_fixed['qty_layer']} Pcs")
-            m_col2.metric("จำนวนชั้น (Layers)", f"{best_fixed['layers']} ชั้น")
-            m_col3.metric("ความจุรวม/กล่อง", f"{best_fixed['qty_box']} Pcs/Box")
-            
-            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
-            render_packing_list(best_fixed)
-            
-            st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.write(draw_asymmetric_svg(best_fixed), unsafe_allow_html=True)
-            
-            st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View Blueprint)")
-            st.write(draw_side_view_svg(best_fixed), unsafe_allow_html=True)
-        else:
-            st.error("❌ ไม่พบรูปแบบพาร์ติชันสำหรับความสูง (H) นี้ได้จริง กรุณาตรวจสอบขนาดและลองอีกครั้ง")
+# ============================================================
+# RESULT RENDERER
+# ============================================================
+def render_result(opt, title, status_tone="good", comparison_text=None):
+    icon = "✅" if status_tone == "good" else "⚠️"
+    st.subheader(f"{icon} {title}")
 
-    with col2:
-        st.header("2️⃣ Alternative Option")
-        if has_better_alternative:
-            st.warning(f"🔥 **แนะนำเปลี่ยนทิศทางการวางเป็น:** {best_overall['orient_label']}")
-            
-            a_col1, a_col2, a_col3 = st.columns(3)
-            a_col1.metric("จำนวนสินค้าในแปลน/ชั้น", f"{best_overall['qty_layer']} Pcs", f"+{best_overall['qty_layer'] - best_fixed['qty_layer']} Pcs")
-            a_col2.metric("จำนวนชั้น (Layers)", f"{best_overall['layers']} ชั้น")
-            a_col3.metric("ความจุรวม/กล่อง", f"{best_overall['qty_box']} Pcs/Box", f"+{best_overall['qty_box'] - best_fixed['qty_box']} Pcs")
-            
-            st.subheader("📋 รายการวัสดุบรรจุภัณฑ์ (BOM)")
-            render_packing_list(best_overall)
-            
-            st.subheader("📐 แผนผังมุมมองจากด้านบน (Top View)")
-            st.write(draw_asymmetric_svg(best_overall), unsafe_allow_html=True)
-            
-            st.subheader("⏳ แผนผังมุมมองภาคตัดขวางด้านข้าง (Side View Blueprint)")
-            st.write(draw_side_view_svg(best_overall), unsafe_allow_html=True)
-        else:
-            st.info("💡 **การประเมินวิศวกรรมเชิงลึก:**")
-            st.markdown(f"""
-            <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 20px; border-radius: 12px; margin-top: 10px;">
-                <h4 style="color: #16a34a; margin-top: 0px;">✅ ทิศทางความสูงปัจจุบันมีประสิทธิภาพสูงสุดแล้ว</h4>
-                <p style="color: #166534; font-size: 15px; line-height: 1.6;">
-                    ระบบวิเคราะห์ 3D 6-Way Rotation Engine พร้อม Structural Guardrails พบว่าทิศทางที่ป้อนค่าเริ่มต้น ให้ความจุรวมสูงสุดและมีโครงสร้าง Grid ที่แข็งแรงปลอดภัยตามมาตรฐาน
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if best_fixed:
-                st.subheader("📊 รายละเอียดสรุปโครงสร้างปัจจุบัน")
-                st.write(f"• **ความสูงพาร์ติชันกระดาษใช้งาน:** {int(best_fixed['part_height'])} mm")
-                example_slot = best_fixed['valid_slots'][0]
-                total_stacked_h = best_fixed['p_h_disp'] * example_slot['qty_z']
-                st.write(f"• **พื้นที่ช่องว่างด้านบนชิ้นงานถึงขอบพาร์ติชัน (Top Gap/Clearance):** {int(best_fixed['part_height'] - total_stacked_h)} mm")
-                st.write(f"• **ระบบป้องกัน BCT:** จำกัดขนาดช่องไม่เกิน {int(max_slot_span)} mm และวางเบียดสูงสุดไม่เกิน {max_pcs_axis}x{max_pcs_axis} ชิ้น/ช่อง")
+    up_tone = "good" if opt["up_axis"] == "H" else "warn"
+    status_badges = (
+        badge(f"{opt['up_axis']}-Up", up_tone)
+        + badge(f"Partition {int(opt['part_height'])} mm", "info")
+        + badge(opt["topology_note"], "good")
+    )
+    if opt["up_axis"] != "H":
+        status_badges += badge("Non-normal orientation", "warn")
+    st.markdown(status_badges, unsafe_allow_html=True)
 
-    st.write("---")
-    st.subheader("📊 ตารางวิเคราะห์รูปแบบกริดและทิศทางการจัดวางที่เป็นไปได้ทั้งหมด")
-    
-    summary_table = []
-    for idx, opt in enumerate(overall_options[:10]):
-        summary_table.append({
-            "อันดับความจุ": "🏆 ดีที่สุด (Optimal)" if idx == 0 else f"ทางเลือกที่ {idx+1}",
-            "ทิศทางจัดวาง": opt["orient_label"],
-            "เป็นแบบ Fixed H?": "✅ ใช่" if opt["is_fixed_h"] else "🔄 หมุน 3D (ทางเลือก)",
-            "โครงสร้างช่อง (Base Slots)": f"{opt['base_qty_box']} ช่อง",
-            "แผ่นแนวตั้งที่ใช้ (Short)": f"{len(opt['ax'])} / 5 Pcs",
-            "แผ่นแนวนอนที่ใช้ (Long)": f"{len(opt['ay'])} / 9 Pcs",
-            "ความจุรวมในแปลน/ชั้น (Layer Pcs)": f"{opt['qty_layer']} Pcs",
-            "จำนวนชั้นทั้งหมด (Layers)": f"{opt['layers']} ชั้น",
-            "ความจุรวมกล่องหลังจากทับ/เบียด (Box Qty)": f"{opt['qty_box']} Pcs/Box"
-        })
-    st.dataframe(summary_table, use_container_width=True)
+    if opt["up_axis"] == "H":
+        st.success(f"Normal orientation: **{opt['orient_label']}**")
+    else:
+        st.warning(f"Non-normal orientation: **{opt['orient_label']}**")
 
+    if comparison_text:
+        st.caption(comparison_text)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Products / Layer", f"{opt['qty_layer']} pcs")
+    c2.metric("Packing Layers", f"{opt['layers']}")
+    c3.metric("Total Capacity", f"{opt['qty_box']} pcs/A10")
+    c4.metric("Base Slots / Layer", f"{opt['base_slots_layer']}")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Partition Height", f"{int(opt['part_height'])} mm")
+    c6.metric("Slot Top Gap", f"{fmt_num(opt['top_gap'])} mm")
+    c7.metric("Product Area Occupancy", f"{opt['area_occupancy']:.1f}%")
+    c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
+
+    st.caption(
+        f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
+        f"Max span X/Y: {fmt_num(opt['max_span_x'])} / {fmt_num(opt['max_span_y'])} mm • "
+        f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm"
+    )
+
+    top_tab, side_tab, bom_tab = st.tabs(
+        ["📐 Smart Top Pattern", "⏳ Side Section", "📋 Packaging BOM"]
+    )
+
+    with top_tab:
+        st.write(draw_top_view_svg(opt), unsafe_allow_html=True)
+
+    with side_tab:
+        st.write(draw_side_view_svg(opt), unsafe_allow_html=True)
+
+    with bom_tab:
+        render_bom(opt)
+
+
+# ============================================================
+# RUN SOLVER
+# ============================================================
+with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
+    options, debug = solve_a10_partition_layouts(
+        p_w,
+        p_l,
+        p_h,
+        clearance,
+        packing_mode,
+        max_pcs_axis,
+        max_slot_span,
+        span_mode,
+        allow_l_up,
+        allow_w_up,
+    )
+
+options = dedupe_options(options)
+allowed_options = [o for o in options if o["allowed"]]
+locked_options = [o for o in options if not o["allowed"]]
+h_options = [o for o in options if o["up_axis"] == "H"]
+
+best_h = max(h_options, key=option_rank) if h_options else None
+best_allowed = max(allowed_options, key=option_rank) if allowed_options else None
+best_locked = max(locked_options, key=option_rank) if locked_options else None
+
+# ============================================================
+# HEADER / WORKING CONDITION
+# ============================================================
+st.title("📦 Auto-Select Partition Layout Design with Carton A10")
+st.caption(
+    f"{APP_VERSION} • {MODULE_NAME} — Orientation-aware Solver + Partition Topology Validation + Groove-constrained Grid + Adaptive Result UI"
+)
+
+st.subheader("📦 Carton A10 Working Condition")
+wc1, wc2, wc3, wc4 = st.columns(4)
+wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_H)} mm")
+wc2.metric("Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
+wc3.metric("Clearance", f"{fmt_num(clearance)} mm")
+wc4.metric("Valid Layouts", f"{len(options)}")
+
+allowed_txt = ["H-Up"]
+if allow_l_up:
+    allowed_txt.append("L-Up")
+if allow_w_up:
+    allowed_txt.append("W-Up")
+st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
+
+st.caption(
+    "V0.1 uses the existing Carton A10 groove geometry and BOM concept. "
+    "The legacy Excel standard-configuration library itself is not yet imported as a database in this version."
+)
+
+st.divider()
+
+# ============================================================
+# ADAPTIVE RECOMMENDATION UI
+# ============================================================
+if not options:
+    st.error(
+        "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, Clearance หรือ Span Guardrail"
+    )
 else:
-    st.error("❌ ไม่พบรูปแบบแผ่นพาร์ติชันกระดาษลูกฟูกสเกลใดที่ผ่านเกณฑ์ความแข็งแรงโครงสร้าง (Structural Guardrails) ได้จริง กรุณาปรับระยะ Clearance หรือขยายค่า Max Span ใน Sidebar")
+    if best_allowed is None:
+        st.error("❌ ไม่พบ layout ใน orientation ที่อนุญาต")
+        if best_locked:
+            st.warning(
+                f"มี Potential {best_locked['up_axis']}-Up layout ที่ {best_locked['qty_box']} pcs/A10 แต่ orientation นี้ยัง Locked อยู่"
+            )
+    else:
+        # CASE A: allowed non-normal orientation gives a real capacity benefit vs H-Up.
+        allowed_alt = None
+        if best_h:
+            non_h_allowed = [o for o in allowed_options if o["up_axis"] != "H"]
+            if non_h_allowed:
+                candidate = max(non_h_allowed, key=option_rank)
+                if candidate["qty_box"] > best_h["qty_box"]:
+                    allowed_alt = candidate
+
+        # CASE B: non-normal is locked but has higher potential capacity.
+        locked_benefit = None
+        if best_h and best_locked and best_locked["qty_box"] > best_h["qty_box"]:
+            locked_benefit = best_locked
+
+        if allowed_alt and best_h:
+            delta = allowed_alt["qty_box"] - best_h["qty_box"]
+            pct = (delta / best_h["qty_box"] * 100.0) if best_h["qty_box"] else 0.0
+            st.warning(
+                f"⚠️ Higher Capacity Alternative: **{allowed_alt['up_axis']}-Up = {allowed_alt['qty_box']} pcs/A10** "
+                f"vs Normal H-Up {best_h['qty_box']} pcs/A10 (**+{delta} pcs / +{pct:.1f}%**) — engineering confirmation required"
+            )
+            left, right = st.columns(2)
+            with left:
+                render_result(best_h, "Normal H-Up Reference", "good")
+            with right:
+                render_result(
+                    allowed_alt,
+                    "Higher Capacity Alternative",
+                    "warn",
+                    comparison_text=f"Capacity benefit vs H-Up: +{delta} pcs/A10 (+{pct:.1f}%)",
+                )
+        else:
+            # One primary result only — avoids duplicated UI when capacity is the same.
+            if best_allowed["up_axis"] == "H":
+                st.success(
+                    f"✅ Recommended: **H-Up / {best_allowed['qty_box']} pcs per A10 / Partition {int(best_allowed['part_height'])} mm / {best_allowed['layers']} packing layer(s)**"
+                )
+                render_result(best_allowed, "Best & Recommended Layout — Normal H-Up", "good")
+            else:
+                st.warning(
+                    f"⚠️ No valid H-Up layout found under current guardrails. Recommended allowed orientation is {best_allowed['up_axis']}-Up at {best_allowed['qty_box']} pcs/A10."
+                )
+                render_result(best_allowed, "Best Allowed Layout", "warn")
+
+            if locked_benefit:
+                delta = locked_benefit["qty_box"] - best_h["qty_box"]
+                pct = (delta / best_h["qty_box"] * 100.0) if best_h and best_h["qty_box"] else 0.0
+                st.warning(
+                    f"🔒 Potential higher-capacity **{locked_benefit['up_axis']}-Up** geometry = "
+                    f"**{locked_benefit['qty_box']} pcs/A10 (+{delta}, +{pct:.1f}%)**, but this orientation is currently not permitted. "
+                    f"Enable {locked_benefit['up_axis']}-Up only after Product / Customer / Label / Handling confirmation."
+                )
+
+# ============================================================
+# SCENARIO EXPLORER
+# ============================================================
+st.divider()
+with st.expander("📊 Layout Scenario Explorer", expanded=False):
+    if options:
+        rows = []
+        for idx, opt in enumerate(options[:15], start=1):
+            rows.append(
+                {
+                    "Rank": idx,
+                    "Orientation": f"{opt['up_axis']}-Up",
+                    "Status": "Allowed" if opt["allowed"] else "Locked",
+                    "Floor × Height": opt["orient_label"],
+                    "Partition": f"{int(opt['part_height'])} mm",
+                    "Grid": f"{len(opt['x_dividers'])-1}×{len(opt['y_dividers'])-1}",
+                    "Base Slots/Layer": opt["base_slots_layer"],
+                    "Pcs/Layer": opt["qty_layer"],
+                    "Layers": opt["layers"],
+                    "Total Pcs/A10": opt["qty_box"],
+                    "Short Part./Layer": opt["short_dividers_per_layer"],
+                    "Long Part./Layer": opt["long_dividers_per_layer"],
+                    "Max Span X": round(opt["max_span_x"], 1),
+                    "Max Span Y": round(opt["max_span_y"], 1),
+                    "Area Occupancy %": round(opt["area_occupancy"], 1),
+                }
+            )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No valid scenario")
+
+with st.expander("🧠 Solver / Engineering Note", expanded=False):
+    st.markdown(
+        f"""
+- **Orientation-aware:** H-Up is the default normal reference. L-Up / W-Up are not used in recommendation unless the user explicitly enables them.
+- **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
+- **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
+- **Span Guardrail:** checked in every packing mode. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
+- **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
+- **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
+- **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
+- **Standard Excel library:** V0.1 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
+        """
+    )
+    st.caption(
+        f"Solver diagnostics: valid {debug['evaluated_valid']} • topology rejects {debug['rejected_topology']} • "
+        f"fit rejects {debug['rejected_fit']} • span rejects {debug['rejected_span']}"
+    )
