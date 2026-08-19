@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.2"
+APP_VERSION = "V0.1.3"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -35,13 +35,32 @@ PAD_L = 574.0
 PAD_W = 394.0
 PAD_T = 3.0
 
-# Groove positions from the existing A10 partition system.
-# IMPORTANT: these positions represent actual partition-sheet locations.
-GROOVE_X_111 = [12.0, 152.0, 292.0, 432.0, 572.0]
-GROOVE_Y_111 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# Drawing-audited A10 partition groove CENTERLINES in CARTON coordinates.
+#
+# Coordinate convention used by the solver:
+#   X = along Carton A10 internal length 592 mm (uses finished PARTITION ...x584)
+#   Y = along Carton A10 internal width  404 mm (uses finished PARTITION ...x393)
+#
+# Finished 584-mm partition is centered in Carton ID 592 -> 4.0 mm sheet offset/side.
+# Finished 393-mm partition is centered in Carton ID 404 -> 5.5 mm sheet offset/side.
+# Groove width in all audited drawings = 5 mm.
+#
+# 111x584 drawing: 14 mm edge clearance + 5 mm groove + 40 mm clear gap
+# between groove edges -> 140 mm centerline pitch.
+GROOVE_X_111 = [16.0, 156.0, 296.0, 436.0, 576.0]
 
-GROOVE_X_225 = [56.0, 176.0, 296.0, 416.0, 536.0]
-GROOVE_Y_225 = [19.5, 65.125, 110.75, 156.375, 202.0, 247.625, 293.25, 338.875, 384.5]
+# 111x393 drawing: 14 mm edge clearance, 5 mm groove, 40 mm clear gap
+# -> 45 mm centerline pitch.
+GROOVE_Y_111 = [22.0, 67.0, 112.0, 157.0, 202.0, 247.0, 292.0, 337.0, 382.0]
+
+# 225x584 drawing: five 5-mm grooves with 120 mm CLEAR gaps.
+# Overall 584 mm closes symmetrically at 39.5 mm clear margin/side
+# (drawing nominally labels the side margin as 40 mm), therefore
+# groove-center pitch = 125 mm and the Carton-coordinate centers are below.
+GROOVE_X_225 = [46.0, 171.0, 296.0, 421.0, 546.0]
+
+# 225x393 uses the same 5-mm groove / 40-mm clear-gap geometry as 111x393.
+GROOVE_Y_225 = [22.0, 67.0, 112.0, 157.0, 202.0, 247.0, 292.0, 337.0, 382.0]
 
 # Outer usable envelope for the partition system / pad zone.
 PARTITION_SYSTEM = {
@@ -57,8 +76,9 @@ PARTITION_SYSTEM = {
     225.0: {
         "groove_x": GROOVE_X_225,
         "groove_y": GROOVE_Y_225,
-        "x_pad_start": 16.0,
-        "x_pad_end": 576.0,
+        # Finished partition sheet is 584 x 393 mm, centered in A10 ID 592 x 404 mm.
+        "x_pad_start": 4.0,
+        "x_pad_end": 588.0,
         "y_pad_start": 5.5,
         "y_pad_end": 398.5,
         "layers": 1,
@@ -215,7 +235,12 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.2: Groove-Aware Dynamic Span Guardrail + Pure Product → ESD Packed Envelope + Topology Validation"
+    "✅ V0.1.3: Drawing-Corrected Groove Geometry + Groove-Aware Span Guardrail + ESD Packed Envelope + Topology Validation"
+)
+
+st.sidebar.caption(
+    "Drawing audit: 111×584 pitch 140 mm • 111/225×393 pitch 45 mm • "
+    "225×584 pitch 125 mm. Groove coordinates are stored as centerlines in Carton A10 coordinates."
 )
 
 # ============================================================
@@ -412,7 +437,7 @@ def effective_span_limits(
         eff_x = max(baseline, target_l * pcs_factor)
         eff_y = max(baseline, target_w * pcs_factor)
 
-        # Critical V0.1.2 fix: discrete A10 groove geometry may make the
+        # V0.1.2+ fix: discrete A10 groove geometry may make the
         # minimum feasible slot larger than the numerical baseline/footprint.
         if min_groove_x is not None:
             eff_x = max(eff_x, min_groove_x)
@@ -1095,7 +1120,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Groove-Aware Span Guardrail + ESD Packed-Envelope + Orientation-aware Solver + Topology Validation"
+    f"{APP_VERSION} • {MODULE_NAME} — Drawing-Corrected Groove Geometry + Groove-Aware Span Guardrail + ESD Packed-Envelope + Topology Validation"
 )
 
 st.subheader("📦 Carton A10 Working Condition")
@@ -1119,7 +1144,7 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.2 uses PURE Product Dimension and automatically builds the ESD packed envelope before solving. "
+    "V0.1.3 uses drawing-audited groove centerlines, PURE Product Dimension, and automatically builds the ESD packed envelope before solving. "
     "The legacy Excel standard-configuration library itself is not yet imported as a database in this version."
 )
 
@@ -1248,7 +1273,7 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
 - **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
 - **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
-- **Standard Excel library:** V0.1.2 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
+- **Standard Excel library:** V0.1.3 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
         """
     )
     st.caption(
