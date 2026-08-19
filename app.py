@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.3"
+APP_VERSION = "V0.1.3.1"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -61,6 +61,26 @@ GROOVE_X_225 = [46.0, 171.0, 296.0, 421.0, 546.0]
 
 # 225x393 uses the same 5-mm groove / 40-mm clear-gap geometry as 111x393.
 GROOVE_Y_225 = [22.0, 67.0, 112.0, 157.0, 202.0, 247.0, 292.0, 337.0, 382.0]
+
+# Geometry/cache revision guard.
+# IMPORTANT: Streamlit cache keys do not automatically include global constants used
+# inside a cached function.  Therefore the audited groove geometry is serialized and
+# passed into the solver as an explicit argument.  Any future groove-coordinate change
+# automatically produces a new cache key and prevents stale layouts from being reused.
+def _geometry_signature():
+    def pack(values):
+        return ",".join(f"{v:.6f}" for v in values)
+
+    return "|".join([
+        "A10_DRAWING_AUDIT_R1",
+        f"111X:{pack(GROOVE_X_111)}",
+        f"111Y:{pack(GROOVE_Y_111)}",
+        f"225X:{pack(GROOVE_X_225)}",
+        f"225Y:{pack(GROOVE_Y_225)}",
+    ])
+
+
+GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Outer usable envelope for the partition system / pad zone.
 PARTITION_SYSTEM = {
@@ -474,7 +494,11 @@ def solve_a10_partition_layouts(
     guardrail_mode,
     allow_l,
     allow_w,
+    geometry_signature,
 ):
+    # geometry_signature is intentionally consumed only as a cache-key dependency.
+    # The solver still reads the canonical audited geometry from PARTITION_SYSTEM.
+    _ = geometry_signature
     orientations = build_orientations(pw, pl, ph, allow_l, allow_w)
     options = []
     rejected_topology = 0
@@ -723,9 +747,40 @@ def dedupe_options(options):
 
 
 # ============================================================
+# GEOMETRY SYNCHRONIZATION VALIDATION
+# ============================================================
+def validate_active_dividers_against_grooves(opt, tolerance=0.01):
+    """Confirm every active divider lies on an audited available groove centerline."""
+    system = PARTITION_SYSTEM[opt["part_height"]]
+    problems = []
+
+    def check_axis(axis_name, active_values, available_values):
+        for value in active_values:
+            nearest = min(available_values, key=lambda g: abs(g - value))
+            delta = abs(nearest - value)
+            if delta > tolerance:
+                problems.append(
+                    f"{axis_name} active divider {fmt_num(value)} mm is not on an audited groove "
+                    f"(nearest {fmt_num(nearest)} mm, Δ={delta:.3f} mm)."
+                )
+
+    check_axis("X", opt["x_dividers"], system["groove_x"])
+    check_axis("Y", opt["y_dividers"], system["groove_y"])
+    return problems
+
+
+def option_geometry_is_synchronized(opt, tolerance=0.01):
+    return len(validate_active_dividers_against_grooves(opt, tolerance)) == 0
+
+
+# ============================================================
 # SVG TOP VIEW
 # ============================================================
 def draw_top_view_svg(opt):
+    sync_problems = validate_active_dividers_against_grooves(opt)
+    if sync_problems:
+        raise ValueError("Active partition / groove geometry mismatch: " + " | ".join(sync_problems))
+
     x_dividers = opt["x_dividers"]
     y_dividers = opt["y_dividers"]
     valid_slots = opt["valid_slots"]
@@ -1080,7 +1135,16 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     )
 
     with top_tab:
-        st.write(draw_top_view_svg(opt), unsafe_allow_html=True)
+        sync_problems = validate_active_dividers_against_grooves(opt)
+        if sync_problems:
+            st.error(
+                "Active Partition / Available Groove synchronization failed. "
+                "The drawing is intentionally blocked so a misleading layout cannot be shown."
+            )
+            for problem in sync_problems:
+                st.caption(f"• {problem}")
+        else:
+            st.write(draw_top_view_svg(opt), unsafe_allow_html=True)
 
     with side_tab:
         st.write(draw_side_view_svg(opt), unsafe_allow_html=True)
@@ -1104,7 +1168,15 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         span_mode,
         allow_l_up,
         allow_w_up,
+        GEOMETRY_SIGNATURE,
     )
+
+# Defensive synchronization gate: even if a stale/malformed result somehow reaches
+# this point, never rank or render it as a valid engineering option.
+geometry_sync_rejected = [o for o in options if not option_geometry_is_synchronized(o)]
+options = [o for o in options if option_geometry_is_synchronized(o)]
+debug["geometry_sync_rejected"] = len(geometry_sync_rejected)
+debug["geometry_signature"] = GEOMETRY_SIGNATURE
 
 options = dedupe_options(options)
 allowed_options = [o for o in options if o["allowed"]]
@@ -1120,7 +1192,10 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Drawing-Corrected Groove Geometry + Groove-Aware Span Guardrail + ESD Packed-Envelope + Topology Validation"
+    f"{APP_VERSION} • {MODULE_NAME} — Solver Cache / Groove Sync Fix + Drawing-Corrected Geometry + Groove-Aware Span Guardrail + ESD Packed-Envelope + Topology Validation"
+)
+st.caption(
+    "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
 )
 
 st.subheader("📦 Carton A10 Working Condition")
