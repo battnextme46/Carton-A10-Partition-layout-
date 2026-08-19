@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.1"
+APP_VERSION = "V0.1.2"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -208,13 +208,14 @@ span_mode = st.sidebar.selectbox(
     ],
     index=0,
     help=(
-        "Dynamic จะใช้ค่าที่มากกว่าระหว่าง Baseline กับ packed product footprint ที่จำเป็นจริง; "
-        "Multi-Fit / Stack-Fit จึงค่อย scale ตาม Max Pcs / Axis. Strict จะยึด Baseline เป็นหลักแต่ไม่บล็อก footprint ขั้นต่ำของสินค้า"
+        "Dynamic จะรักษา Baseline เป็นหลัก และถ้า groove จริงของ A10 บังคับให้ span ขั้นต่ำที่ใส่สินค้าได้ใหญ่กว่า Baseline "
+        "ระบบจะผ่อนเฉพาะเท่าที่จำเป็นถึง groove-compatible span นั้น. Multi-Fit / Stack-Fit ยังคง scale ตาม Max Pcs / Axis. "
+        "Strict = Baseline เป็น hard limit; ถ้า groove ที่จำเป็นเกิน Baseline ระบบจะไม่ยอมรับ layout"
     ),
 )
 
 st.sidebar.info(
-    "✅ V0.1.1: Pure Product → ESD Packed Envelope auto + Partition Topology Validation + hardened Span Guardrail"
+    "✅ V0.1.2: Groove-Aware Dynamic Span Guardrail + Pure Product → ESD Packed Envelope + Topology Validation"
 )
 
 # ============================================================
@@ -356,27 +357,74 @@ def topology_validation(x_dividers, y_dividers):
     return True, "Interlocked grid"
 
 
-def effective_span_limits(target_l, target_w, mode, max_pcs_per_axis, baseline, guardrail_mode):
+def groove_span_catalog(grooves):
+    """Return all unique positive spans that can actually be formed by A10 groove positions."""
+    spans = set()
+    for i in range(len(grooves)):
+        for j in range(i + 1, len(grooves)):
+            span = round(grooves[j] - grooves[i], 6)
+            if span > 0:
+                spans.add(span)
+    return sorted(spans)
+
+
+def minimum_groove_compatible_span(grooves, required_span):
+    """Smallest real groove-to-groove span that can physically fit the required packed footprint."""
+    for span in groove_span_catalog(grooves):
+        if span + 1e-9 >= required_span:
+            return span
+    return None
+
+
+def effective_span_limits(
+    target_l,
+    target_w,
+    mode,
+    max_pcs_per_axis,
+    baseline,
+    guardrail_mode,
+    groove_x,
+    groove_y,
+):
     """
-    Return X/Y span limits. X spans are evaluated against product flat-L,
-    Y spans against product flat-W, matching the existing A10 solver convention.
+    Return effective X/Y maximum span limits plus minimum groove-compatible spans.
+
+    X spans are evaluated against product flat-L and Y spans against flat-W.
+
+    Dynamic mode preserves the previous Multi-Fit scaling behavior, but it will
+    never reject a product merely because the A10 groove pitch forces the
+    smallest feasible slot to be slightly/largely above the baseline. It relaxes
+    only as far as the minimum REAL groove-compatible span required by one
+    packed product footprint.
+
+    Strict mode treats the user baseline as a true hard maximum span.
     """
+    min_groove_x = minimum_groove_compatible_span(groove_x, target_l)
+    min_groove_y = minimum_groove_compatible_span(groove_y, target_w)
+
     if "Standard 1 PC/Slot" in mode:
-        # Standard mode needs only one packed product footprint per slot.
-        # Do NOT automatically double the span limit.
         pcs_factor = 1.0
     else:
         pcs_factor = float(max_pcs_per_axis)
 
     if guardrail_mode.startswith("Dynamic"):
+        # Keep V0.1.1 Multi-Fit / Stack-Fit scaling, then add groove awareness.
         eff_x = max(baseline, target_l * pcs_factor)
         eff_y = max(baseline, target_w * pcs_factor)
-    else:
-        # Strict still must permit the minimum product footprint itself.
-        eff_x = max(baseline, target_l)
-        eff_y = max(baseline, target_w)
 
-    return eff_x, eff_y
+        # Critical V0.1.2 fix: discrete A10 groove geometry may make the
+        # minimum feasible slot larger than the numerical baseline/footprint.
+        if min_groove_x is not None:
+            eff_x = max(eff_x, min_groove_x)
+        if min_groove_y is not None:
+            eff_y = max(eff_y, min_groove_y)
+    else:
+        # Strict = real hard limit. Product fit and groove geometry are not
+        # allowed to silently expand the user's engineering limit.
+        eff_x = baseline
+        eff_y = baseline
+
+    return eff_x, eff_y, min_groove_x, min_groove_y
 
 
 def span_stats(bounds):
@@ -407,6 +455,7 @@ def solve_a10_partition_layouts(
     rejected_topology = 0
     rejected_span = 0
     rejected_fit = 0
+    span_requirements = []
 
     for orient in orientations:
         ew = orient["flat_w"]
@@ -426,13 +475,30 @@ def solve_a10_partition_layouts(
         target_l = el + clr
         target_h = eh + clr
 
-        eff_span_x, eff_span_y = effective_span_limits(
+        eff_span_x, eff_span_y, min_groove_span_x, min_groove_span_y = effective_span_limits(
             target_l,
             target_w,
             mode,
             max_pcs_per_axis,
             max_span_limit,
             guardrail_mode,
+            groove_x,
+            groove_y,
+        )
+
+        span_requirements.append(
+            {
+                "orientation_id": orient["orientation_id"],
+                "up_axis": orient["up_axis"],
+                "allowed": orient["allowed"],
+                "part_height": part_height,
+                "target_l": target_l,
+                "target_w": target_w,
+                "min_groove_span_x": min_groove_span_x,
+                "min_groove_span_y": min_groove_span_y,
+                "eff_span_x": eff_span_x,
+                "eff_span_y": eff_span_y,
+            }
         )
 
         subsets_x = generate_partition_subsets(groove_x)
@@ -568,6 +634,8 @@ def solve_a10_partition_layouts(
                     "topology_note": topo_note,
                     "eff_span_x": eff_span_x,
                     "eff_span_y": eff_span_y,
+                    "min_groove_span_x": min_groove_span_x,
+                    "min_groove_span_y": min_groove_span_y,
                     "max_span_x": max_x_span,
                     "max_span_y": max_y_span,
                     "span_ratio": span_ratio,
@@ -584,6 +652,7 @@ def solve_a10_partition_layouts(
         "rejected_span": rejected_span,
         "rejected_fit": rejected_fit,
         "evaluated_valid": len(options),
+        "span_requirements": span_requirements,
     }
     return options, debug
 
@@ -976,7 +1045,9 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
         f"Packed orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} × {fmt_num(opt['target_h'])} mm • "
         f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
         f"Max span X/Y: {fmt_num(opt['max_span_x'])} / {fmt_num(opt['max_span_y'])} mm • "
-        f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm"
+        f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm • "
+        f"Min groove-compatible X/Y: {fmt_num(opt['min_groove_span_x']) if opt['min_groove_span_x'] is not None else 'N/A'} / "
+        f"{fmt_num(opt['min_groove_span_y']) if opt['min_groove_span_y'] is not None else 'N/A'} mm"
     )
 
     top_tab, side_tab, bom_tab = st.tabs(
@@ -1024,7 +1095,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — ESD Packed-Envelope Logic + Orientation-aware Solver + Topology Validation + Groove-constrained Grid"
+    f"{APP_VERSION} • {MODULE_NAME} — Groove-Aware Span Guardrail + ESD Packed-Envelope + Orientation-aware Solver + Topology Validation"
 )
 
 st.subheader("📦 Carton A10 Working Condition")
@@ -1048,7 +1119,7 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.1 uses PURE Product Dimension and automatically builds the ESD packed envelope before solving. "
+    "V0.1.2 uses PURE Product Dimension and automatically builds the ESD packed envelope before solving. "
     "The legacy Excel standard-configuration library itself is not yet imported as a database in this version."
 )
 
@@ -1061,6 +1132,18 @@ if not options:
     st.error(
         "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, ESD Allowance หรือ Span Guardrail"
     )
+    if span_mode == "Strict":
+        allowed_reqs = [r for r in debug.get("span_requirements", []) if r.get("allowed")]
+        if allowed_reqs:
+            # Prefer H-Up diagnostic because it is the normal engineering reference.
+            diag = next((r for r in allowed_reqs if r.get("up_axis") == "H"), allowed_reqs[0])
+            req_x = diag.get("min_groove_span_x")
+            req_y = diag.get("min_groove_span_y")
+            if req_x is not None and req_y is not None:
+                st.info(
+                    f"Strict diagnostic — minimum groove-compatible span for {diag['up_axis']}-Up is "
+                    f"X/Y = {fmt_num(req_x)} / {fmt_num(req_y)} mm, while Strict baseline = {fmt_num(max_slot_span)} mm."
+                )
 else:
     if best_allowed is None:
         st.error("❌ ไม่พบ layout ใน orientation ที่อนุญาต")
@@ -1161,11 +1244,11 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
 - **ESD Packed Envelope:** Product inputs are PURE dimensions. Current allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm per dimension**.
 - **Stack-Fit vertical logic:** every stacked product uses its own packed-envelope height; the ESD allowance is no longer subtracted only once for the whole stack.
-- **Span Guardrail:** checked in every packing mode. Standard 1 PC/Slot no longer receives an automatic 2× span expansion. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
+- **Span Guardrail:** checked in every packing mode. **Dynamic** keeps the baseline but auto-relaxes only when the actual A10 groove pitch requires a larger minimum span to fit one packed product. **Strict** uses the baseline as a hard maximum. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
 - **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
 - **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
 - **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
-- **Standard Excel library:** V0.1.1 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
+- **Standard Excel library:** V0.1.2 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
         """
     )
     st.caption(
