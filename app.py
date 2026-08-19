@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1"
+APP_VERSION = "V0.1.1"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -136,13 +136,34 @@ if allow_l_up or allow_w_up:
         "⚠️ Non-normal orientation ถูกเปิดใช้งาน กรุณายืนยัน Product / Customer / Label / Handling requirement ก่อนนำไปใช้จริง"
     )
 
-st.sidebar.header("🛡️ 3. Slot Clearance")
-clearance = st.sidebar.slider(
-    "ระยะเผื่อช่อง / ESD bag allowance (mm)",
+st.sidebar.header("🛡️ 3. ESD Bag / Slot Allowance")
+esd_allowance_per_side = st.sidebar.slider(
+    "ESD Bag Allowance per Side (mm)",
     min_value=0.0,
-    max_value=20.0,
-    value=10.0,
+    max_value=15.0,
+    value=5.0,
     step=0.5,
+    help=(
+        "กรอกเป็นระยะเผื่อต่อด้านของ ESD bag / packed envelope. "
+        "Company standard ปัจจุบัน = 5 mm/side"
+    ),
+)
+
+# The solver works with TOTAL dimensional allowance.  Example: 5 mm/side
+# means +10 mm to W, +10 mm to L and +10 mm to H.
+total_esd_allowance = esd_allowance_per_side * 2.0
+
+effective_product_w = p_w + total_esd_allowance
+effective_product_l = p_l + total_esd_allowance
+effective_product_h = p_h + total_esd_allowance
+
+st.sidebar.caption(
+    "Company standard: 5 mm/side → +10 mm per dimension. "
+    "กรอก Product Dimension เป็น PURE product size — ห้ามบวก ESD allowance ล่วงหน้า"
+)
+st.sidebar.info(
+    f"Packed envelope = {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} × {fmt_num(effective_product_h)} mm"
 )
 
 st.sidebar.header("📦 4. Slot Capacity Mode")
@@ -155,13 +176,17 @@ packing_mode = st.sidebar.radio(
     ],
 )
 
-max_pcs_axis = st.sidebar.slider(
-    "Max Pcs / Axis ใน 1 slot",
-    min_value=1,
-    max_value=4,
-    value=2,
-    help="ใช้กับ Multi-Fit / Stack-Fit เพื่อจำกัดจำนวนชิ้นงานต่อแกนใน 1 slot",
-)
+if "Standard 1 PC/Slot" in packing_mode:
+    max_pcs_axis = 1
+    st.sidebar.caption("Standard mode: Max Pcs / Axis = 1 (fixed)")
+else:
+    max_pcs_axis = st.sidebar.slider(
+        "Max Pcs / Axis ใน 1 slot",
+        min_value=1,
+        max_value=4,
+        value=2,
+        help="ใช้กับ Multi-Fit / Stack-Fit เพื่อจำกัดจำนวนชิ้นงานต่อแกนใน 1 slot",
+    )
 
 st.sidebar.header("🏗️ 5. Partition Structural Guardrail")
 max_slot_span = st.sidebar.number_input(
@@ -183,13 +208,13 @@ span_mode = st.sidebar.selectbox(
     ],
     index=0,
     help=(
-        "Dynamic จะขยาย span limit ตาม product footprint / multi-fit requirement เพื่อไม่ตัด layout ที่จำเป็นออกโดยไม่สมเหตุผล; "
-        "Strict จะใช้ค่าที่กำหนดเป็นหลัก"
+        "Dynamic จะใช้ค่าที่มากกว่าระหว่าง Baseline กับ packed product footprint ที่จำเป็นจริง; "
+        "Multi-Fit / Stack-Fit จึงค่อย scale ตาม Max Pcs / Axis. Strict จะยึด Baseline เป็นหลักแต่ไม่บล็อก footprint ขั้นต่ำของสินค้า"
     ),
 )
 
 st.sidebar.info(
-    "✅ V0.1 เพิ่ม Partition Topology Validation: reject layout แบบ 1 giant cell และต้องมี partition สองทิศทางประกอบเป็น interlocked grid"
+    "✅ V0.1.1: Pure Product → ESD Packed Envelope auto + Partition Topology Validation + hardened Span Guardrail"
 )
 
 # ============================================================
@@ -337,7 +362,9 @@ def effective_span_limits(target_l, target_w, mode, max_pcs_per_axis, baseline, 
     Y spans against product flat-W, matching the existing A10 solver convention.
     """
     if "Standard 1 PC/Slot" in mode:
-        pcs_factor = 2.0
+        # Standard mode needs only one packed product footprint per slot.
+        # Do NOT automatically double the span limit.
+        pcs_factor = 1.0
     else:
         pcs_factor = float(max_pcs_per_axis)
 
@@ -394,8 +421,10 @@ def solve_a10_partition_layouts(
         groove_x = system["groove_x"]
         groove_y = system["groove_y"]
 
+        # clr is TOTAL packed-envelope allowance (2 × per-side ESD allowance).
         target_w = ew + clr
         target_l = el + clr
+        target_h = eh + clr
 
         eff_span_x, eff_span_y = effective_span_limits(
             target_l,
@@ -445,8 +474,8 @@ def solve_a10_partition_layouts(
                             qty_y = min(max_pcs_per_axis, max(1, int(slot_y // target_w)))
 
                             if "Stack-Fit" in mode:
-                                usable_vertical = max(0.0, part_height - clr)
-                                qty_z = max(1, int(usable_vertical // eh))
+                                # Each stacked product has its own ESD packed envelope.
+                                qty_z = max(1, int(part_height // target_h))
                             else:
                                 qty_z = 1
 
@@ -493,7 +522,9 @@ def solve_a10_partition_layouts(
                 product_area_layer = qty_layer * ew * el
                 area_occupancy = min(100.0, (product_area_layer / envelope_area) * 100.0)
 
-                top_gap = part_height - (eh * valid_slots[0]["qty_z"])
+                # Gap is measured from the OUTSIDE of the packed ESD envelope,
+                # not from the pure product body.
+                top_gap = part_height - (target_h * valid_slots[0]["qty_z"])
                 total_used_h = (part_height + PAD_T) * layers + PAD_T
                 carton_top_air_gap = CARTON_H - total_used_h
 
@@ -514,6 +545,8 @@ def solve_a10_partition_layouts(
                     "p_h_disp": eh,
                     "target_w": target_w,
                     "target_l": target_l,
+                    "target_h": target_h,
+                    "esd_total_allowance": clr,
                     "part_height": part_height,
                     "layers": layers,
                     "x_dividers": list(x_dividers),
@@ -672,6 +705,8 @@ def draw_top_view_svg(opt):
 
     draw_w = opt["p_l_disp"] * scale
     draw_h = opt["p_w_disp"] * scale
+    env_w = opt["target_l"] * scale
+    env_h = opt["target_w"] * scale
 
     # Product placement in every valid slot.
     for slot in valid_slots:
@@ -684,6 +719,14 @@ def draw_top_view_svg(opt):
             for ky in range(slot["qty_y"]):
                 cx = pad_x + slot["x_start"] * scale + kx * step_x + step_x / 2
                 cy = pad_y + slot["y_start"] * scale + ky * step_y + step_y / 2
+                # ESD packed envelope (blue dashed) surrounds the pure product.
+                erx = cx - env_w / 2
+                ery = cy - env_h / 2
+                svg += (
+                    f'<rect x="{erx+1}" y="{ery+1}" width="{max(2,env_w-2)}" height="{max(2,env_h-2)}" '
+                    f'fill="#dbeafe" fill-opacity="0.28" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" rx="4" />'
+                )
+
                 rx = cx - draw_w / 2
                 ry = cy - draw_h / 2
                 svg += (
@@ -699,7 +742,7 @@ def draw_top_view_svg(opt):
 
     svg += (
         f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" font-size="11" '
-        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove</text>'
+        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove • Blue dashed = ESD Packed Envelope</text>'
     )
     svg += '</svg>'
     return svg
@@ -720,6 +763,7 @@ def draw_side_view_svg(opt):
     box_h = CARTON_H * scale_y
     part_h_px = opt["part_height"] * scale_y
     prod_h_px = opt["p_h_disp"] * scale_y
+    env_h_px = opt["target_h"] * scale_y
     pad_t_px = PAD_T * scale_y
 
     system = PARTITION_SYSTEM[opt["part_height"]]
@@ -775,15 +819,25 @@ def draw_side_view_svg(opt):
             qty_x = matching_slot["qty_x"]
             qty_z = matching_slot["qty_z"]
             product_w_px = opt["p_l_disp"] * scale_x
+            env_w_px = opt["target_l"] * scale_x
             step_x = slot_span * scale_x / qty_x
             slot_start_px = pad_x + slot_left * scale_x
 
             for kx in range(qty_x):
                 cx = slot_start_px + kx * step_x + step_x / 2
                 rx = cx - product_w_px / 2
+                erx = cx - env_w_px / 2
 
                 for kz in range(qty_z):
-                    ry = level_bottom - prod_h_px * (kz + 1)
+                    # Packed envelopes stack against each other; pure product is centered inside each envelope.
+                    env_top = level_bottom - env_h_px * (kz + 1)
+                    svg += (
+                        f'<rect x="{erx+1}" y="{env_top+1}" width="{max(2,env_w_px-2)}" '
+                        f'height="{max(2,env_h_px-2)}" fill="#dbeafe" fill-opacity="0.28" '
+                        f'stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" rx="3" />'
+                    )
+
+                    ry = env_top + (env_h_px - prod_h_px) / 2.0
                     svg += (
                         f'<rect x="{rx+1}" y="{ry+1}" width="{max(2,product_w_px-2)}" '
                         f'height="{max(2,prod_h_px-2)}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
@@ -792,7 +846,7 @@ def draw_side_view_svg(opt):
         # Show product-to-partition gap on the last visible column.
         if opt["top_gap"] > 0:
             gx = pad_x + (x_end_pad - 25) * scale_x
-            product_top = level_bottom - opt["p_h_disp"] * opt["valid_slots"][0]["qty_z"] * scale_y
+            product_top = level_bottom - opt["target_h"] * opt["valid_slots"][0]["qty_z"] * scale_y
             svg += (
                 f'<line x1="{gx}" y1="{product_top}" x2="{gx}" y2="{partition_top}" '
                 f'stroke="#2563eb" stroke-width="1.4" stroke-dasharray="3,3" />'
@@ -919,6 +973,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
 
     st.caption(
+        f"Packed orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} × {fmt_num(opt['target_h'])} mm • "
         f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
         f"Max span X/Y: {fmt_num(opt['max_span_x'])} / {fmt_num(opt['max_span_y'])} mm • "
         f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm"
@@ -946,7 +1001,7 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         p_w,
         p_l,
         p_h,
-        clearance,
+        total_esd_allowance,
         packing_mode,
         max_pcs_axis,
         max_slot_span,
@@ -969,15 +1024,21 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Orientation-aware Solver + Partition Topology Validation + Groove-constrained Grid + Adaptive Result UI"
+    f"{APP_VERSION} • {MODULE_NAME} — ESD Packed-Envelope Logic + Orientation-aware Solver + Topology Validation + Groove-constrained Grid"
 )
 
 st.subheader("📦 Carton A10 Working Condition")
 wc1, wc2, wc3, wc4 = st.columns(4)
 wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_H)} mm")
-wc2.metric("Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
-wc3.metric("Clearance", f"{fmt_num(clearance)} mm")
+wc2.metric("Pure Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
+wc3.metric("ESD Allowance", f"{fmt_num(esd_allowance_per_side)} mm / side")
 wc4.metric("Valid Layouts", f"{len(options)}")
+
+st.info(
+    f"**Effective Packed Envelope:** {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} × {fmt_num(effective_product_h)} mm  "
+    f"(Total dimensional allowance = +{fmt_num(total_esd_allowance)} mm)"
+)
 
 allowed_txt = ["H-Up"]
 if allow_l_up:
@@ -987,7 +1048,7 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1 uses the existing Carton A10 groove geometry and BOM concept. "
+    "V0.1.1 uses PURE Product Dimension and automatically builds the ESD packed envelope before solving. "
     "The legacy Excel standard-configuration library itself is not yet imported as a database in this version."
 )
 
@@ -998,7 +1059,7 @@ st.divider()
 # ============================================================
 if not options:
     st.error(
-        "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, Clearance หรือ Span Guardrail"
+        "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, ESD Allowance หรือ Span Guardrail"
     )
 else:
     if best_allowed is None:
@@ -1098,11 +1159,13 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Orientation-aware:** H-Up is the default normal reference. L-Up / W-Up are not used in recommendation unless the user explicitly enables them.
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
-- **Span Guardrail:** checked in every packing mode. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
+- **ESD Packed Envelope:** Product inputs are PURE dimensions. Current allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm per dimension**.
+- **Stack-Fit vertical logic:** every stacked product uses its own packed-envelope height; the ESD allowance is no longer subtracted only once for the whole stack.
+- **Span Guardrail:** checked in every packing mode. Standard 1 PC/Slot no longer receives an automatic 2× span expansion. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
 - **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
 - **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
 - **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
-- **Standard Excel library:** V0.1 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
+- **Standard Excel library:** V0.1.1 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
         """
     )
     st.caption(
