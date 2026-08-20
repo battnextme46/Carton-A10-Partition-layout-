@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.5"
+APP_VERSION = "V0.1.5.1"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -90,9 +90,10 @@ def _geometry_signature():
 GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Solver/cache logic revision guard.
-# V0.1.5 keeps the complete-grid-aware Dynamic Span model and adds
-# selected-layout Fit Margin / Critical Boundary analysis for the current ESD allowance.
-SOLVER_LOGIC_SIGNATURE = "V015_PARTITION_VARIANT_FOLDED_BAG_R1"
+# V0.1.5.1 adds Auto Folded-Bag Feasibility for RFQ use.
+# Auto mode solves from the pure product footprint, then back-calculates the
+# maximum effective folded-bag allowance that preserves each selected layout/capacity.
+SOLVER_LOGIC_SIGNATURE = "V0151_AUTO_FOLDED_BAG_FEASIBILITY_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 #
@@ -252,13 +253,15 @@ esd_fit_model = st.sidebar.radio(
     "ESD Bag Fit Model",
     options=[
         "Standard — Rigid Lateral Allowance",
-        "Folded / Compressible Bag — Trial Required",
+        "Folded / Compressible — Auto Feasibility (RFQ)",
+        "Folded / Compressible — Verified by Trial",
     ],
     index=0,
     help=(
-        "Standard = บวก lateral allowance เข้า 2 floor axes ตามปกติ. "
-        "Folded / Compressible = ถุงสามารถพับ/ย่นตาม product ได้ จึงใช้ effective fit allowance "
-        "ที่กำหนดแยกด้านล่าง; ต้องยืนยันด้วย sample / packing trial ก่อนใช้งานจริง"
+        "Standard = ใช้ nominal lateral allowance เป็น rigid footprint โดยตรง. "
+        "Auto Feasibility = สำหรับ RFQ/ยังไม่มี sample: solver เริ่มจาก pure product footprint "
+        "แล้ว back-calculate ว่า folded bag ต้องมี effective allowance ไม่เกินเท่าไรจึงจะรักษา layout/capacity ได้. "
+        "Verified by Trial = ใช้ค่าที่วัด/ยืนยันจาก sample packing trial แล้ว"
     ),
 )
 
@@ -270,29 +273,48 @@ esd_allowance_per_side = st.sidebar.slider(
     step=0.5,
     help=(
         "ค่า nominal/reference ของบริษัท ปัจจุบัน = 5 mm/side. "
-        "ใน Standard mode ค่านี้ถูกใช้เป็น solver fit allowance โดยตรง"
+        "ค่านี้เป็น reference สำหรับ Standard mode และใช้เป็น benchmark ใน Auto Feasibility"
     ),
 )
 
-if esd_fit_model.startswith("Folded"):
-    effective_esd_fit_per_side = st.sidebar.slider(
-        "Effective Folded-Bag Fit Allowance per Side (mm)",
+if esd_fit_model.startswith("Standard"):
+    # Rigid-envelope assumption.
+    solver_esd_allowance_per_side = esd_allowance_per_side
+    st.sidebar.info(
+        f"Standard mode: solver uses the full nominal allowance "
+        f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
+    )
+
+elif "Auto Feasibility" in esd_fit_model:
+    # RFQ mode: do NOT ask the engineer to guess an effective folded allowance.
+    # Generate candidate layouts from pure product footprint, then use the
+    # selected-layout Fit Margin calculation to back-calculate the allowable
+    # effective folded-bag allowance.
+    solver_esd_allowance_per_side = 0.0
+    st.sidebar.warning(
+        "⚠️ Auto Feasibility (RFQ): ไม่ต้องเดา Effective Folded-Bag Allowance. "
+        "Solver จะใช้ Pure Product Footprint เพื่อหา candidate ก่อน แล้วรายงานว่า "
+        "ถุงหลังพับ/ย่นต้องมี Effective Allowance ≤ เท่าไรต่อด้านจึงจะรักษา layout/capacity นั้นได้"
+    )
+
+else:
+    # Verified mode is used only after a sample / actual folded package has been
+    # measured or otherwise verified.
+    verified_default = min(2.0, float(esd_allowance_per_side))
+    solver_esd_allowance_per_side = st.sidebar.slider(
+        "Verified Effective Folded-Bag Allowance per Side (mm)",
         min_value=0.0,
         max_value=float(esd_allowance_per_side),
-        value=0.0,
+        value=verified_default,
         step=0.5,
         help=(
-            "Allowance ที่ solver ใช้จริงเมื่อถุงถูกพับ/ย่นให้พอดีกับชิ้นงาน. "
-            "0 mm = ใช้ pure product footprint สำหรับ geometric fit. "
-            "ไม่ใช่การยืนยันว่า bag ไม่มีความหนา; ต้อง confirm จาก packing trial / actual folded bag."
+            "กรอกเฉพาะค่าที่ได้จากการวัด/packing trial จริงแล้ว เช่น Product 65 mm "
+            "หลังพับถุงมี packed width 69 mm → effective allowance = (69-65)/2 = 2 mm/side"
         ),
     )
-    st.sidebar.warning(
-        "⚠️ Folded / Compressible Bag mode เป็น engineering trial mode: "
-        "solver ไม่ถือ nominal ESD allowance เป็น rigid envelope อัตโนมัติ"
+    st.sidebar.success(
+        "✅ Verified by Trial mode: solver ใช้ effective folded-bag allowance ที่ผ่านการวัด/ยืนยันแล้ว"
     )
-else:
-    effective_esd_fit_per_side = esd_allowance_per_side
 
 vertical_clearance = st.sidebar.number_input(
     "Vertical / Top Clearance (mm)",
@@ -306,11 +328,10 @@ vertical_clearance = st.sidebar.number_input(
     ),
 )
 
-# The solver uses the EFFECTIVE fit allowance selected by the ESD model.
-# Standard mode: effective = company / nominal allowance.
-# Folded mode: effective is independently defined by the engineer based on how
-# the bag is actually folded/compressed in the slot.
-solver_esd_allowance_per_side = effective_esd_fit_per_side
+# Solver effective lateral allowance:
+#   Standard -> nominal company allowance
+#   Auto RFQ -> 0 mm/side for candidate generation; requirement is back-calculated later
+#   Verified -> measured/trial-confirmed effective allowance
 total_esd_allowance = solver_esd_allowance_per_side * 2.0
 
 # Working-condition preview below is for the Normal H-Up orientation only.
@@ -318,14 +339,22 @@ effective_product_w = p_w + total_esd_allowance
 effective_product_l = p_l + total_esd_allowance
 effective_product_h = p_h + vertical_clearance
 
-st.sidebar.caption(
-    "Product Dimension = PURE product size. Company nominal ESD = "
-    f"{fmt_num(esd_allowance_per_side)} mm/side; Solver effective fit allowance = "
-    f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
-)
+if "Auto Feasibility" in esd_fit_model:
+    st.sidebar.caption(
+        "Product Dimension = PURE product size. Company nominal ESD = "
+        f"{fmt_num(esd_allowance_per_side)} mm/side. "
+        "Auto RFQ solver starts at 0 mm/side effective allowance and back-calculates the allowable folded-bag limit from each result."
+    )
+else:
+    st.sidebar.caption(
+        "Product Dimension = PURE product size. Company nominal ESD = "
+        f"{fmt_num(esd_allowance_per_side)} mm/side; Solver effective fit allowance = "
+        f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
+    )
+
 st.sidebar.info(
-    f"Normal H-Up effective = {fmt_num(effective_product_w)} × "
-    f"{fmt_num(effective_product_l)} footprint × {fmt_num(effective_product_h)} mm vertical"
+    f"Normal H-Up solver footprint = {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} mm • vertical requirement = {fmt_num(effective_product_h)} mm"
 )
 
 st.sidebar.header("📦 4. Slot Capacity Mode")
@@ -403,7 +432,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.5: 111×584-01 Variant + Folded/Compressible Bag Fit Model + Groove Visibility Ticks"
+    "✅ V0.1.5.1: Auto Folded-Bag Feasibility + Back-Calculated Trial Target + Partition Variant Auto-Select"
 )
 
 st.sidebar.caption(
@@ -1604,46 +1633,111 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
 
     # --------------------------------------------------------
-    # V0.1.5 — FIT MARGIN / CRITICAL BOUNDARY
+    # V0.1.5.1 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
     # --------------------------------------------------------
-    fm1, fm2, fm3, fm4 = st.columns(4)
-    fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
-    fm2.metric("Min Slot Reserve Y", f"{fmt_num(opt['min_slot_reserve_y'])} mm")
-    fm3.metric("ESD Headroom / Side", f"{fmt_num(opt['esd_headroom_per_side'])} mm")
-    fm4.metric(
-        "Selected-Layout ESD Limit",
-        f"{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side",
-    )
+    is_auto_folded = "Auto Feasibility" in opt.get("esd_fit_model", "")
+    is_verified_folded = "Verified by Trial" in opt.get("esd_fit_model", "")
 
-    if opt["fit_margin_status"] == "CRITICAL":
-        st.warning(
-            "⚠️ **Critical Fit / Zero Lateral Reserve** — "
-            f"current packed footprint uses the selected slot capacity at its nominal limit "
-            f"(limiting direction: {opt['limiting_floor_direction']}). "
-            f"Current solver fit allowance = **{fmt_num(opt['effective_esd_per_side'])} mm/side**; "
-            f"the current selected grid/capacity limit is approximately "
-            f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**. "
-            "Increasing beyond this point may reduce capacity or force a different partition grid."
+    if is_auto_folded:
+        folded_limit = max(0.0, opt["max_esd_per_side_current_layout"])
+        nominal = opt["nominal_esd_per_side"]
+        reduction_required = max(0.0, nominal - folded_limit)
+
+        fm1, fm2, fm3, fm4 = st.columns(4)
+        fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
+        fm2.metric("Min Slot Reserve Y", f"{fmt_num(opt['min_slot_reserve_y'])} mm")
+        fm3.metric("Required Folded Bag ≤", f"{fmt_num(folded_limit)} mm/side")
+        fm4.metric("Reduction vs Nominal", f"{fmt_num(reduction_required)} mm/side")
+
+        if folded_limit + 1e-9 >= nominal:
+            st.success(
+                "✅ **Folded-Bag Feasibility PASS against nominal reference** — "
+                f"the selected layout/capacity geometrically allows an effective folded-bag allowance up to "
+                f"**{fmt_num(folded_limit)} mm/side**, which is not tighter than the company nominal "
+                f"**{fmt_num(nominal)} mm/side**."
+            )
+        elif folded_limit > 0.01:
+            st.warning(
+                "⚠️ **RFQ Trial Target — Folded / Compressible Bag** — "
+                f"to keep **{opt['qty_box']} pcs/A10** with this partition grid, the actual bag after folding/compression "
+                f"must fit within **≤ {fmt_num(folded_limit)} mm/side effective lateral allowance** "
+                f"(nominal company reference = {fmt_num(nominal)} mm/side). "
+                f"Required reduction from the nominal rigid-envelope assumption = at least "
+                f"**{fmt_num(reduction_required)} mm/side**. "
+                "Confirm with sample / packing trial before release."
+            )
+        else:
+            st.error(
+                "❌ **Auto Feasibility is at zero nominal reserve** — "
+                "this selected capacity requires the folded package to be essentially at the pure-product footprint "
+                "in the limiting direction. Treat as high-risk until a physical packing trial proves it."
+            )
+
+        st.caption(
+            "Auto Feasibility does NOT claim that the ESD bag material is this thin. "
+            "It back-calculates the maximum effective lateral footprint growth that the selected grid can tolerate."
         )
-    elif opt["fit_margin_status"] == "TIGHT":
-        st.warning(
-            "⚠️ **Tight Fit Margin** — "
-            f"only **{fmt_num(opt['esd_headroom_per_side'])} mm/side** nominal ESD headroom remains "
-            f"before the current selected grid/capacity reaches its next fit breakpoint "
-            f"(limiting direction: {opt['limiting_floor_direction']})."
-        )
+
     else:
-        st.info(
-            "✅ **Fit Margin Available** — "
-            f"minimum nominal ESD headroom = **{fmt_num(opt['esd_headroom_per_side'])} mm/side**; "
-            f"current selected grid/capacity remains geometrically valid up to approximately "
-            f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**."
+        fm1, fm2, fm3, fm4 = st.columns(4)
+        fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
+        fm2.metric("Min Slot Reserve Y", f"{fmt_num(opt['min_slot_reserve_y'])} mm")
+        fm3.metric("ESD Headroom / Side", f"{fmt_num(opt['esd_headroom_per_side'])} mm")
+        fm4.metric(
+            "Selected-Layout ESD Limit",
+            f"{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side",
         )
 
-    st.caption(
-        "Fit Margin is nominal geometry screening only; product tolerance, ESD bag forming variation, "
-        "partition die-cut tolerance and assembly deformation are not included."
-    )
+        if is_verified_folded:
+            verified_margin = (
+                opt["max_esd_per_side_current_layout"] - opt["effective_esd_per_side"]
+            )
+            if verified_margin < -0.01:
+                st.error(
+                    "❌ Verified folded-bag allowance exceeds the selected-layout nominal limit."
+                )
+            elif verified_margin <= 0.50:
+                st.warning(
+                    "⚠️ **Verified Folded-Bag Fit is tight** — "
+                    f"verified effective allowance = **{fmt_num(opt['effective_esd_per_side'])} mm/side**; "
+                    f"selected-layout nominal limit = **{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**."
+                )
+            else:
+                st.success(
+                    "✅ **Verified Folded-Bag Fit PASS** — "
+                    f"verified effective allowance = **{fmt_num(opt['effective_esd_per_side'])} mm/side**; "
+                    f"remaining nominal headroom = **{fmt_num(verified_margin)} mm/side**."
+                )
+        else:
+            if opt["fit_margin_status"] == "CRITICAL":
+                st.warning(
+                    "⚠️ **Critical Fit / Zero Lateral Reserve** — "
+                    f"current packed footprint uses the selected slot capacity at its nominal limit "
+                    f"(limiting direction: {opt['limiting_floor_direction']}). "
+                    f"Current solver fit allowance = **{fmt_num(opt['effective_esd_per_side'])} mm/side**; "
+                    f"the current selected grid/capacity limit is approximately "
+                    f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**. "
+                    "Increasing beyond this point may reduce capacity or force a different partition grid."
+                )
+            elif opt["fit_margin_status"] == "TIGHT":
+                st.warning(
+                    "⚠️ **Tight Fit Margin** — "
+                    f"only **{fmt_num(opt['esd_headroom_per_side'])} mm/side** nominal ESD headroom remains "
+                    f"before the current selected grid/capacity reaches its next fit breakpoint "
+                    f"(limiting direction: {opt['limiting_floor_direction']})."
+                )
+            else:
+                st.info(
+                    "✅ **Fit Margin Available** — "
+                    f"minimum nominal ESD headroom = **{fmt_num(opt['esd_headroom_per_side'])} mm/side**; "
+                    f"current selected grid/capacity remains geometrically valid up to approximately "
+                    f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**."
+                )
+
+        st.caption(
+            "Fit Margin is nominal geometry screening only; product tolerance, ESD bag forming variation, "
+            "partition die-cut tolerance and assembly deformation are not included."
+        )
 
     st.caption(
         f"Effective orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} footprint × {fmt_num(opt['target_h'])} mm vertical • "
@@ -1725,7 +1819,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Partition Variant Auto-Select + Folded/Compressible Bag Support + Fit Margin"
+    f"{APP_VERSION} • {MODULE_NAME} — Auto Folded-Bag Feasibility + Partition Variant Auto-Select + Fit Margin"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -1736,15 +1830,22 @@ wc1, wc2, wc3, wc4, wc5, wc6 = st.columns(6)
 wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_H)} mm")
 wc2.metric("Pure Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
 wc3.metric("Nominal ESD", f"{fmt_num(esd_allowance_per_side)} mm / side")
-wc4.metric("Solver Fit Allowance", f"{fmt_num(solver_esd_allowance_per_side)} mm / side")
+wc4.metric(
+    "Solver Fit Allowance",
+    "AUTO" if "Auto Feasibility" in esd_fit_model else f"{fmt_num(solver_esd_allowance_per_side)} mm / side",
+)
 wc5.metric("Vertical Clearance", f"{fmt_num(vertical_clearance)} mm")
 wc6.metric("Valid Layouts", f"{len(options)}")
 
 st.info(
     f"**Normal H-Up Effective Condition:** Footprint {fmt_num(effective_product_w)} × "
     f"{fmt_num(effective_product_l)} mm • Vertical requirement {fmt_num(effective_product_h)} mm.  "
-    f"ESD fit model = **{esd_fit_model}** • solver contributes +{fmt_num(total_esd_allowance)} mm "
-    f"to each floor dimension only."
+    + (
+        f"ESD fit model = **{esd_fit_model}** • "
+        "Auto RFQ candidate generation uses pure product footprint; allowable folded-bag fit is back-calculated from the selected result."
+        if "Auto Feasibility" in esd_fit_model
+        else f"ESD fit model = **{esd_fit_model}** • solver contributes +{fmt_num(total_esd_allowance)} mm to each floor dimension only."
+    )
 )
 
 allowed_txt = ["H-Up"]
@@ -1755,8 +1856,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.5 adds automatic 111×584 vs 111×584-01 die-cut variant selection and a Folded / Compressible ESD Bag trial model. "
-    "The solver still uses drawing-audited groove centerlines, complete-grid-aware Dynamic Span, explicit orientation permission and Fit Margin screening."
+    "V0.1.5.1 adds RFQ Auto Folded-Bag Feasibility: the engineer no longer guesses the folded allowance. "
+    "The tool solves candidate grids from pure product footprint and back-calculates the maximum effective folded-bag allowance allowed by the selected layout/capacity."
 )
 
 st.divider()
@@ -1893,6 +1994,16 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Min Reserve Y": round(opt["min_slot_reserve_y"], 2),
                     "ESD Headroom/Side": round(opt["esd_headroom_per_side"], 2),
                     "ESD Limit/Side": round(opt["max_esd_per_side_current_layout"], 2),
+                    "Folded Trial Target ≤": (
+                        round(opt["max_esd_per_side_current_layout"], 2)
+                        if "Auto Feasibility" in opt.get("esd_fit_model", "")
+                        else None
+                    ),
+                    "Reduction vs Nominal": (
+                        round(max(0.0, opt["nominal_esd_per_side"] - opt["max_esd_per_side_current_layout"]), 2)
+                        if "Auto Feasibility" in opt.get("esd_fit_model", "")
+                        else None
+                    ),
                     "Fit Status": opt["fit_margin_status"],
                     "Area Occupancy %": round(opt["area_occupancy"], 1),
                 }
@@ -1907,8 +2018,10 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Orientation-aware:** H-Up is the default normal reference. L-Up / W-Up are not used in recommendation unless the user explicitly enables them.
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
-- **ESD Bag Fit Model:** current model = **{esd_fit_model}**. Company / nominal ESD = **{fmt_num(esd_allowance_per_side)} mm/side**; solver effective lateral fit allowance = **{fmt_num(solver_esd_allowance_per_side)} mm/side**.
-- **Folded / Compressible limitation:** folded-bag mode does not treat the nominal bag allowance as a rigid geometric envelope. It requires sample / packing-trial confirmation and should not be used as a material-thickness claim.
+- **ESD Bag Fit Model:** current model = **{esd_fit_model}**. Company / nominal ESD reference = **{fmt_num(esd_allowance_per_side)} mm/side**.
+- **Auto Folded-Bag Feasibility (RFQ):** candidate layouts are generated from the **pure product footprint (0 mm/side effective allowance)**. For every result, Fit Margin back-calculates the **maximum effective folded-bag allowance per side** that preserves that exact grid/capacity. The engineer does not guess this value.
+- **Verified by Trial:** after sample packing, use the measured effective folded allowance. Example: pure width 65 mm → folded packed width 69 mm gives `(69-65)/2 = 2 mm/side`.
+- **Folded / Compressible limitation:** Auto Feasibility is a geometric trial target only. It does not claim a physical ESD material thickness and must be confirmed by sample / packing trial before release.
 - **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
 - **Fit Margin limitation:** this is nominal geometry only; Product tolerance, ESD bag forming variation, partition die-cut tolerance and assembly deformation are not included.
 - **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition 111/225 selection and Stack-Fit vertical capacity use **Pure Up-axis + Vertical Clearance**; ESD footprint allowance is not added to the Up-axis.
