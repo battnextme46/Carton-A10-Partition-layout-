@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.3.1"
+APP_VERSION = "V0.1.4"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -81,6 +81,11 @@ def _geometry_signature():
 
 
 GEOMETRY_SIGNATURE = _geometry_signature()
+
+# Solver/cache logic revision guard.
+# V0.1.4 changes ESD allowance to FLOOR/FOOTPRINT axes only; the Up-axis
+# uses pure product dimension plus a separate Vertical / Top Clearance input.
+SOLVER_LOGIC_SIGNATURE = "V014_ESD_FOOTPRINT_ONLY_VERTICAL_CLEARANCE_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 PARTITION_SYSTEM = {
@@ -176,34 +181,47 @@ if allow_l_up or allow_w_up:
         "⚠️ Non-normal orientation ถูกเปิดใช้งาน กรุณายืนยัน Product / Customer / Label / Handling requirement ก่อนนำไปใช้จริง"
     )
 
-st.sidebar.header("🛡️ 3. ESD Bag / Slot Allowance")
+st.sidebar.header("🛡️ 3. ESD Bag / Footprint Allowance")
 esd_allowance_per_side = st.sidebar.slider(
-    "ESD Bag Allowance per Side (mm)",
+    "ESD Bag Allowance per Side — Floor Axes (mm)",
     min_value=0.0,
     max_value=15.0,
     value=5.0,
     step=0.5,
     help=(
-        "กรอกเป็นระยะเผื่อต่อด้านของ ESD bag / packed envelope. "
+        "ระยะเผื่อ ESD bag ต่อด้าน ใช้เฉพาะ 2 แกนที่อยู่บนพื้นของ orientation นั้น ๆ "
         "Company standard ปัจจุบัน = 5 mm/side"
     ),
 )
 
-# The solver works with TOTAL dimensional allowance.  Example: 5 mm/side
-# means +10 mm to W, +10 mm to L and +10 mm to H.
+vertical_clearance = st.sidebar.number_input(
+    "Vertical / Top Clearance (mm)",
+    min_value=0.0,
+    max_value=50.0,
+    value=0.0,
+    step=0.5,
+    help=(
+        "ระยะเผื่อแนวตั้งแยกจาก ESD bag. Default = 0 mm เพื่อให้การเลือก Partition 111/225 "
+        "อ้างอิง Pure Up-axis dimension ก่อน หากงานจริงต้องการ headroom เพิ่มให้กำหนดที่นี่"
+    ),
+)
+
+# ESD allowance is applied only to the TWO FLOOR axes of each orientation.
+# The Up-axis uses pure product dimension + the separate vertical clearance.
 total_esd_allowance = esd_allowance_per_side * 2.0
 
+# Working-condition preview below is for the Normal H-Up orientation only.
 effective_product_w = p_w + total_esd_allowance
 effective_product_l = p_l + total_esd_allowance
-effective_product_h = p_h + total_esd_allowance
+effective_product_h = p_h + vertical_clearance
 
 st.sidebar.caption(
-    "Company standard: 5 mm/side → +10 mm per dimension. "
+    "Company standard: ESD 5 mm/side → +10 mm to each FLOOR dimension only. "
     "กรอก Product Dimension เป็น PURE product size — ห้ามบวก ESD allowance ล่วงหน้า"
 )
 st.sidebar.info(
-    f"Packed envelope = {fmt_num(effective_product_w)} × "
-    f"{fmt_num(effective_product_l)} × {fmt_num(effective_product_h)} mm"
+    f"Normal H-Up effective = {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} footprint × {fmt_num(effective_product_h)} mm vertical"
 )
 
 st.sidebar.header("📦 4. Slot Capacity Mode")
@@ -255,7 +273,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.3: Drawing-Corrected Groove Geometry + Groove-Aware Span Guardrail + ESD Packed Envelope + Topology Validation"
+    "✅ V0.1.4: ESD Footprint-Only Allowance + Separate Vertical Clearance + Drawing-Corrected Groove Geometry + Topology Validation"
 )
 
 st.sidebar.caption(
@@ -353,10 +371,11 @@ def orientation_label(orient):
 # ============================================================
 # PARTITION / TOPOLOGY HELPERS
 # ============================================================
-def select_partition_system(vertical_h, clr):
-    if vertical_h + clr <= 111.0:
+def select_partition_system(vertical_h, vertical_clr):
+    required_vertical_h = vertical_h + vertical_clr
+    if required_vertical_h <= 111.0:
         return 111.0, PARTITION_SYSTEM[111.0]
-    if vertical_h + clr <= 225.0:
+    if required_vertical_h <= 225.0:
         return 225.0, PARTITION_SYSTEM[225.0]
     return None, None
 
@@ -487,7 +506,8 @@ def solve_a10_partition_layouts(
     pw,
     pl,
     ph,
-    clr,
+    esd_total_allowance,
+    vertical_clr,
     mode,
     max_pcs_per_axis,
     max_span_limit,
@@ -495,10 +515,11 @@ def solve_a10_partition_layouts(
     allow_l,
     allow_w,
     geometry_signature,
+    solver_logic_signature,
 ):
-    # geometry_signature is intentionally consumed only as a cache-key dependency.
-    # The solver still reads the canonical audited geometry from PARTITION_SYSTEM.
-    _ = geometry_signature
+    # Explicit cache-key dependencies. Geometry and solver-logic changes must not
+    # reuse stale layouts from an older Streamlit cache.
+    _ = (geometry_signature, solver_logic_signature)
     orientations = build_orientations(pw, pl, ph, allow_l, allow_w)
     options = []
     rejected_topology = 0
@@ -511,7 +532,7 @@ def solve_a10_partition_layouts(
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        part_height, system = select_partition_system(eh, clr)
+        part_height, system = select_partition_system(eh, vertical_clr)
         if system is None:
             continue
 
@@ -519,10 +540,12 @@ def solve_a10_partition_layouts(
         groove_x = system["groove_x"]
         groove_y = system["groove_y"]
 
-        # clr is TOTAL packed-envelope allowance (2 × per-side ESD allowance).
-        target_w = ew + clr
-        target_l = el + clr
-        target_h = eh + clr
+        # V0.1.4: ESD allowance belongs to the TWO FLOOR axes only.
+        # The Up-axis is pure product height for that orientation plus an
+        # independent Vertical / Top Clearance engineering input.
+        target_w = ew + esd_total_allowance
+        target_l = el + esd_total_allowance
+        target_h = eh + vertical_clr
 
         eff_span_x, eff_span_y, min_groove_span_x, min_groove_span_y = effective_span_limits(
             target_l,
@@ -589,7 +612,8 @@ def solve_a10_partition_layouts(
                             qty_y = min(max_pcs_per_axis, max(1, int(slot_y // target_w)))
 
                             if "Stack-Fit" in mode:
-                                # Each stacked product has its own ESD packed envelope.
+                                # Each stacked product uses its own vertical requirement:
+                                # pure Up-axis dimension + Vertical / Top Clearance.
                                 qty_z = max(1, int(part_height // target_h))
                             else:
                                 qty_z = 1
@@ -637,8 +661,8 @@ def solve_a10_partition_layouts(
                 product_area_layer = qty_layer * ew * el
                 area_occupancy = min(100.0, (product_area_layer / envelope_area) * 100.0)
 
-                # Gap is measured from the OUTSIDE of the packed ESD envelope,
-                # not from the pure product body.
+                # Residual gap after accounting for the selected vertical requirement
+                # of every stacked product. ESD footprint allowance is NOT added here.
                 top_gap = part_height - (target_h * valid_slots[0]["qty_z"])
                 total_used_h = (part_height + PAD_T) * layers + PAD_T
                 carton_top_air_gap = CARTON_H - total_used_h
@@ -661,7 +685,8 @@ def solve_a10_partition_layouts(
                     "target_w": target_w,
                     "target_l": target_l,
                     "target_h": target_h,
-                    "esd_total_allowance": clr,
+                    "esd_total_allowance": esd_total_allowance,
+                    "vertical_clearance": vertical_clr,
                     "part_height": part_height,
                     "layers": layers,
                     "x_dividers": list(x_dividers),
@@ -891,7 +916,7 @@ def draw_top_view_svg(opt):
 
     svg += (
         f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" font-size="11" '
-        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove • Blue dashed = ESD Packed Envelope</text>'
+        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove • Blue dashed = ESD Footprint Envelope</text>'
     )
     svg += '</svg>'
     return svg
@@ -978,7 +1003,9 @@ def draw_side_view_svg(opt):
                 erx = cx - env_w_px / 2
 
                 for kz in range(qty_z):
-                    # Packed envelopes stack against each other; pure product is centered inside each envelope.
+                    # Vertical requirement cells stack against each other.
+                    # Pure product sits at the bottom of each cell so any configured
+                    # Vertical / Top Clearance remains above the product.
                     env_top = level_bottom - env_h_px * (kz + 1)
                     svg += (
                         f'<rect x="{erx+1}" y="{env_top+1}" width="{max(2,env_w_px-2)}" '
@@ -986,7 +1013,7 @@ def draw_side_view_svg(opt):
                         f'stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" rx="3" />'
                     )
 
-                    ry = env_top + (env_h_px - prod_h_px) / 2.0
+                    ry = env_top + max(0.0, env_h_px - prod_h_px)
                     svg += (
                         f'<rect x="{rx+1}" y="{ry+1}" width="{max(2,product_w_px-2)}" '
                         f'height="{max(2,prod_h_px-2)}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.2" rx="3" />'
@@ -1002,7 +1029,7 @@ def draw_side_view_svg(opt):
             )
             svg += (
                 f'<text x="{gx+5}" y="{(product_top+partition_top)/2}" font-family="system-ui,sans-serif" '
-                f'font-size="10" font-weight="700" fill="#2563eb">Slot Top Gap: {fmt_num(opt["top_gap"])} mm</text>'
+                f'font-size="10" font-weight="700" fill="#2563eb">Residual Top Gap: {fmt_num(opt["top_gap"])} mm</text>'
             )
 
     # Top pad
@@ -1117,12 +1144,12 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Partition Height", f"{int(opt['part_height'])} mm")
-    c6.metric("Slot Top Gap", f"{fmt_num(opt['top_gap'])} mm")
+    c6.metric("Residual Top Gap", f"{fmt_num(opt['top_gap'])} mm")
     c7.metric("Product Area Occupancy", f"{opt['area_occupancy']:.1f}%")
     c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
 
     st.caption(
-        f"Packed orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} × {fmt_num(opt['target_h'])} mm • "
+        f"Effective orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} footprint × {fmt_num(opt['target_h'])} mm vertical • "
         f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
         f"Max span X/Y: {fmt_num(opt['max_span_x'])} / {fmt_num(opt['max_span_y'])} mm • "
         f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm • "
@@ -1162,6 +1189,7 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         p_l,
         p_h,
         total_esd_allowance,
+        vertical_clearance,
         packing_mode,
         max_pcs_axis,
         max_slot_span,
@@ -1169,6 +1197,7 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         allow_l_up,
         allow_w_up,
         GEOMETRY_SIGNATURE,
+        SOLVER_LOGIC_SIGNATURE,
     )
 
 # Defensive synchronization gate: even if a stale/malformed result somehow reaches
@@ -1192,23 +1221,24 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Solver Cache / Groove Sync Fix + Drawing-Corrected Geometry + Groove-Aware Span Guardrail + ESD Packed-Envelope + Topology Validation"
+    f"{APP_VERSION} • {MODULE_NAME} — ESD Footprint-Only Logic + Separate Vertical Clearance + Drawing-Corrected Geometry + Groove-Aware Span Guardrail"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
 )
 
 st.subheader("📦 Carton A10 Working Condition")
-wc1, wc2, wc3, wc4 = st.columns(4)
+wc1, wc2, wc3, wc4, wc5 = st.columns(5)
 wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_H)} mm")
 wc2.metric("Pure Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
-wc3.metric("ESD Allowance", f"{fmt_num(esd_allowance_per_side)} mm / side")
-wc4.metric("Valid Layouts", f"{len(options)}")
+wc3.metric("ESD Footprint Allowance", f"{fmt_num(esd_allowance_per_side)} mm / side")
+wc4.metric("Vertical Clearance", f"{fmt_num(vertical_clearance)} mm")
+wc5.metric("Valid Layouts", f"{len(options)}")
 
 st.info(
-    f"**Effective Packed Envelope:** {fmt_num(effective_product_w)} × "
-    f"{fmt_num(effective_product_l)} × {fmt_num(effective_product_h)} mm  "
-    f"(Total dimensional allowance = +{fmt_num(total_esd_allowance)} mm)"
+    f"**Normal H-Up Effective Condition:** Footprint {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} mm • Vertical requirement {fmt_num(effective_product_h)} mm.  "
+    f"ESD contributes +{fmt_num(total_esd_allowance)} mm to each floor dimension only."
 )
 
 allowed_txt = ["H-Up"]
@@ -1219,8 +1249,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.3 uses drawing-audited groove centerlines, PURE Product Dimension, and automatically builds the ESD packed envelope before solving. "
-    "The legacy Excel standard-configuration library itself is not yet imported as a database in this version."
+    "V0.1.4 uses drawing-audited groove centerlines and PURE Product Dimension. ESD allowance is applied only to the two floor axes of each orientation; "
+    "the Up-axis uses pure dimension + separate Vertical / Top Clearance. The legacy Excel table remains reference-only during validation."
 )
 
 st.divider()
@@ -1230,7 +1260,7 @@ st.divider()
 # ============================================================
 if not options:
     st.error(
-        "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, ESD Allowance หรือ Span Guardrail"
+        "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, ESD Footprint Allowance, Vertical Clearance หรือ Span Guardrail"
     )
     if span_mode == "Strict":
         allowed_reqs = [r for r in debug.get("span_requirements", []) if r.get("allowed")]
@@ -1342,13 +1372,14 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Orientation-aware:** H-Up is the default normal reference. L-Up / W-Up are not used in recommendation unless the user explicitly enables them.
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
-- **ESD Packed Envelope:** Product inputs are PURE dimensions. Current allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm per dimension**.
-- **Stack-Fit vertical logic:** every stacked product uses its own packed-envelope height; the ESD allowance is no longer subtracted only once for the whole stack.
+- **ESD Footprint Allowance:** Product inputs are PURE dimensions. Current ESD allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm** to each of the TWO FLOOR axes only.
+- **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition 111/225 selection and Stack-Fit vertical capacity use **Pure Up-axis + Vertical Clearance**; ESD footprint allowance is not added to the Up-axis.
+- **Stack-Fit vertical logic:** every stacked product uses its own vertical requirement (`pure Up-axis + vertical clearance`).
 - **Span Guardrail:** checked in every packing mode. **Dynamic** keeps the baseline but auto-relaxes only when the actual A10 groove pitch requires a larger minimum span to fit one packed product. **Strict** uses the baseline as a hard maximum. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
 - **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
 - **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
 - **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
-- **Standard Excel library:** V0.1.3 has not yet converted the historical Excel standard packing table into a master database. That can be added as a later Standard Match layer after the V0.1 solver is validated against real cases.
+- **Legacy Excel reference:** historical A10 configurations are being audited as validation references only; they are not treated as master logic or automatically imported into the solver.
         """
     )
     st.caption(
