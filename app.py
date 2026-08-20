@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.4.2"
+APP_VERSION = "V0.1.5"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -45,9 +45,15 @@ PAD_T = 3.0
 # Finished 393-mm partition is centered in Carton ID 404 -> 5.5 mm sheet offset/side.
 # Groove width in all audited drawings = 5 mm.
 #
-# 111x584 drawing: 14 mm edge clearance + 5 mm groove + 40 mm clear gap
+# 111x584 drawing: 9.5 mm clear edge margin + 5 mm groove + 135 mm clear gap
 # between groove edges -> 140 mm centerline pitch.
 GROOVE_X_111 = [16.0, 156.0, 296.0, 436.0, 576.0]
+
+# 111x584-01 drawing: 9.5 mm clear edge margin, 5 mm groove,
+# 65 mm clear gap -> 70 mm centerline pitch, 9 grooves.
+# Sheet coordinates = [12,82,152,222,292,362,432,502,572].
+# Finished 584-mm sheet is centered in Carton ID 592 -> +4 mm.
+GROOVE_X_111_584_01 = [16.0, 86.0, 156.0, 226.0, 296.0, 366.0, 436.0, 506.0, 576.0]
 
 # 111x393 drawing: 14 mm edge clearance, 5 mm groove, 40 mm clear gap
 # -> 45 mm centerline pitch.
@@ -73,7 +79,8 @@ def _geometry_signature():
 
     return "|".join([
         "A10_DRAWING_AUDIT_R1",
-        f"111X:{pack(GROOVE_X_111)}",
+        f"111X_STD:{pack(GROOVE_X_111)}",
+        f"111X_584_01:{pack(GROOVE_X_111_584_01)}",
         f"111Y:{pack(GROOVE_Y_111)}",
         f"225X:{pack(GROOVE_X_225)}",
         f"225Y:{pack(GROOVE_Y_225)}",
@@ -83,13 +90,25 @@ def _geometry_signature():
 GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Solver/cache logic revision guard.
-# V0.1.4.2 keeps the complete-grid-aware Dynamic Span model and adds
+# V0.1.5 keeps the complete-grid-aware Dynamic Span model and adds
 # selected-layout Fit Margin / Critical Boundary analysis for the current ESD allowance.
-SOLVER_LOGIC_SIGNATURE = "V0142_FIT_MARGIN_CRITICAL_BOUNDARY_R1"
+SOLVER_LOGIC_SIGNATURE = "V015_PARTITION_VARIANT_FOLDED_BAG_R1"
 
 # Outer usable envelope for the partition system / pad zone.
-PARTITION_SYSTEM = {
-    111.0: {
+#
+# IMPORTANT V0.1.5:
+# Partition height 111 mm has TWO audited long-sheet die-cut variants:
+#   - PARTITION 111×584      : 5 grooves, 140-mm pitch
+#   - PARTITION 111×584-01   : 9 grooves, 70-mm pitch
+# The short sheet PARTITION 111×393 remains the same 9-groove / 45-mm-pitch part.
+#
+# The solver evaluates both 111-mm variants automatically and only recommends -01
+# when its denser groove pattern creates a real capacity / fit benefit.
+PARTITION_SYSTEM_VARIANTS = {
+    "111_STD": {
+        "variant_id": "111_STD",
+        "part_height": 111.0,
+        "variant_priority": 2,  # prefer standard die-cut on an exact performance tie
         "groove_x": GROOVE_X_111,
         "groove_y": GROOVE_Y_111,
         "x_pad_start": 4.0,
@@ -97,18 +116,64 @@ PARTITION_SYSTEM = {
         "y_pad_start": 5.5,
         "y_pad_end": 398.5,
         "layers": 2,
+        "short_partition_name": "PARTITION 111×393",
+        "long_partition_name": "PARTITION 111×584",
+        "variant_label": "111×584 Standard (5 grooves / 140-mm pitch)",
     },
-    225.0: {
+    "111_584_01": {
+        "variant_id": "111_584_01",
+        "part_height": 111.0,
+        "variant_priority": 1,
+        "groove_x": GROOVE_X_111_584_01,
+        "groove_y": GROOVE_Y_111,
+        "x_pad_start": 4.0,
+        "x_pad_end": 588.0,
+        "y_pad_start": 5.5,
+        "y_pad_end": 398.5,
+        "layers": 2,
+        "short_partition_name": "PARTITION 111×393",
+        "long_partition_name": "PARTITION 111×584-01",
+        "long_partition_alias": "PARTITION 111×584-1",
+        "variant_label": "111×584-01 Fine Pitch (9 grooves / 70-mm pitch)",
+    },
+    "225_STD": {
+        "variant_id": "225_STD",
+        "part_height": 225.0,
+        "variant_priority": 2,
         "groove_x": GROOVE_X_225,
         "groove_y": GROOVE_Y_225,
-        # Finished partition sheet is 584 x 393 mm, centered in A10 ID 592 x 404 mm.
         "x_pad_start": 4.0,
         "x_pad_end": 588.0,
         "y_pad_start": 5.5,
         "y_pad_end": 398.5,
         "layers": 1,
+        "short_partition_name": "PARTITION 225×393",
+        "long_partition_name": "PARTITION 225×584",
+        "variant_label": "225×584 Standard (5 grooves / 125-mm pitch)",
     },
 }
+
+PARTITION_VARIANTS_BY_HEIGHT = {
+    111.0: [
+        PARTITION_SYSTEM_VARIANTS["111_STD"],
+        PARTITION_SYSTEM_VARIANTS["111_584_01"],
+    ],
+    225.0: [
+        PARTITION_SYSTEM_VARIANTS["225_STD"],
+    ],
+}
+
+
+def get_partition_system_for_option(opt):
+    """Return the exact audited die-cut system used by an option."""
+    variant_id = opt.get("partition_variant_id")
+    if variant_id in PARTITION_SYSTEM_VARIANTS:
+        return PARTITION_SYSTEM_VARIANTS[variant_id]
+
+    # Defensive backward fallback for old cached/manual option dictionaries.
+    if opt.get("part_height") == 111.0:
+        return PARTITION_SYSTEM_VARIANTS["111_STD"]
+    return PARTITION_SYSTEM_VARIANTS["225_STD"]
 
 # ============================================================
 # SMALL UI HELPERS
@@ -182,17 +247,52 @@ if allow_l_up or allow_w_up:
     )
 
 st.sidebar.header("🛡️ 3. ESD Bag / Footprint Allowance")
+
+esd_fit_model = st.sidebar.radio(
+    "ESD Bag Fit Model",
+    options=[
+        "Standard — Rigid Lateral Allowance",
+        "Folded / Compressible Bag — Trial Required",
+    ],
+    index=0,
+    help=(
+        "Standard = บวก lateral allowance เข้า 2 floor axes ตามปกติ. "
+        "Folded / Compressible = ถุงสามารถพับ/ย่นตาม product ได้ จึงใช้ effective fit allowance "
+        "ที่กำหนดแยกด้านล่าง; ต้องยืนยันด้วย sample / packing trial ก่อนใช้งานจริง"
+    ),
+)
+
 esd_allowance_per_side = st.sidebar.slider(
-    "ESD Bag Allowance per Side — Floor Axes (mm)",
+    "Company / Nominal ESD Allowance per Side (mm)",
     min_value=0.0,
     max_value=15.0,
     value=5.0,
     step=0.5,
     help=(
-        "ระยะเผื่อ ESD bag ต่อด้าน ใช้เฉพาะ 2 แกนที่อยู่บนพื้นของ orientation นั้น ๆ "
-        "Company standard ปัจจุบัน = 5 mm/side"
+        "ค่า nominal/reference ของบริษัท ปัจจุบัน = 5 mm/side. "
+        "ใน Standard mode ค่านี้ถูกใช้เป็น solver fit allowance โดยตรง"
     ),
 )
+
+if esd_fit_model.startswith("Folded"):
+    effective_esd_fit_per_side = st.sidebar.slider(
+        "Effective Folded-Bag Fit Allowance per Side (mm)",
+        min_value=0.0,
+        max_value=float(esd_allowance_per_side),
+        value=0.0,
+        step=0.5,
+        help=(
+            "Allowance ที่ solver ใช้จริงเมื่อถุงถูกพับ/ย่นให้พอดีกับชิ้นงาน. "
+            "0 mm = ใช้ pure product footprint สำหรับ geometric fit. "
+            "ไม่ใช่การยืนยันว่า bag ไม่มีความหนา; ต้อง confirm จาก packing trial / actual folded bag."
+        ),
+    )
+    st.sidebar.warning(
+        "⚠️ Folded / Compressible Bag mode เป็น engineering trial mode: "
+        "solver ไม่ถือ nominal ESD allowance เป็น rigid envelope อัตโนมัติ"
+    )
+else:
+    effective_esd_fit_per_side = esd_allowance_per_side
 
 vertical_clearance = st.sidebar.number_input(
     "Vertical / Top Clearance (mm)",
@@ -206,9 +306,12 @@ vertical_clearance = st.sidebar.number_input(
     ),
 )
 
-# ESD allowance is applied only to the TWO FLOOR axes of each orientation.
-# The Up-axis uses pure product dimension + the separate vertical clearance.
-total_esd_allowance = esd_allowance_per_side * 2.0
+# The solver uses the EFFECTIVE fit allowance selected by the ESD model.
+# Standard mode: effective = company / nominal allowance.
+# Folded mode: effective is independently defined by the engineer based on how
+# the bag is actually folded/compressed in the slot.
+solver_esd_allowance_per_side = effective_esd_fit_per_side
+total_esd_allowance = solver_esd_allowance_per_side * 2.0
 
 # Working-condition preview below is for the Normal H-Up orientation only.
 effective_product_w = p_w + total_esd_allowance
@@ -216,8 +319,9 @@ effective_product_l = p_l + total_esd_allowance
 effective_product_h = p_h + vertical_clearance
 
 st.sidebar.caption(
-    "Company standard: ESD 5 mm/side → +10 mm to each FLOOR dimension only. "
-    "กรอก Product Dimension เป็น PURE product size — ห้ามบวก ESD allowance ล่วงหน้า"
+    "Product Dimension = PURE product size. Company nominal ESD = "
+    f"{fmt_num(esd_allowance_per_side)} mm/side; Solver effective fit allowance = "
+    f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
 )
 st.sidebar.info(
     f"Normal H-Up effective = {fmt_num(effective_product_w)} × "
@@ -235,16 +339,42 @@ packing_mode = st.sidebar.radio(
 )
 
 if "Standard 1 PC/Slot" in packing_mode:
+    slot_limit_basis = "Standard 1 PC/Slot"
     max_pcs_axis = 1
-    st.sidebar.caption("Standard mode: Max Pcs / Axis = 1 (fixed)")
+    max_total_pcs_slot = 1
+    st.sidebar.caption("Standard mode: 1 product / slot (fixed)")
 else:
-    max_pcs_axis = st.sidebar.slider(
-        "Max Pcs / Axis ใน 1 slot",
-        min_value=1,
-        max_value=4,
-        value=2,
-        help="ใช้กับ Multi-Fit / Stack-Fit เพื่อจำกัดจำนวนชิ้นงานต่อแกนใน 1 slot",
+    slot_limit_basis = st.sidebar.radio(
+        "Slot Quantity Limit Basis",
+        options=[
+            "Max Total Pcs / Slot — Recommended",
+            "Max Pcs / Axis — Legacy / Advanced",
+        ],
+        index=0,
+        help=(
+            "Recommended = ใช้เมื่อ Packing Spec ระบุชัด เช่น 2 pcs/slot. "
+            "Legacy / Advanced = จำกัดจำนวนต่อแกน ทำให้ค่า 2 สามารถเป็น 2×2 = 4 pcs/slot ได้"
+        ),
     )
+
+    if slot_limit_basis.startswith("Max Total"):
+        max_total_pcs_slot = st.sidebar.slider(
+            "Max Total Pcs / Slot",
+            min_value=1,
+            max_value=8,
+            value=2,
+            help="จำนวน product สูงสุดรวมบน floor ของ 1 slot สำหรับ Multi-Fit",
+        )
+        max_pcs_axis = max_total_pcs_slot
+    else:
+        max_pcs_axis = st.sidebar.slider(
+            "Max Pcs / Axis ใน 1 slot",
+            min_value=1,
+            max_value=4,
+            value=2,
+            help="Legacy / advanced mode: ค่า 2 อาจอนุญาตสูงสุด 2×2 = 4 pcs/slot",
+        )
+        max_total_pcs_slot = max_pcs_axis * max_pcs_axis
 
 st.sidebar.header("🏗️ 5. Partition Structural Guardrail")
 max_slot_span = st.sidebar.number_input(
@@ -273,12 +403,12 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.4.2: Fit Margin / Critical Boundary + Complete-Grid-Aware Dynamic Span + Drawing-Corrected Geometry"
+    "✅ V0.1.5: 111×584-01 Variant + Folded/Compressible Bag Fit Model + Groove Visibility Ticks"
 )
 
 st.sidebar.caption(
-    "Drawing audit: 111×584 pitch 140 mm • 111/225×393 pitch 45 mm • "
-    "225×584 pitch 125 mm. Groove coordinates are stored as centerlines in Carton A10 coordinates."
+    "Drawing audit: 111×584 pitch 140 mm • 111×584-01 pitch 70 mm • "
+    "111/225×393 pitch 45 mm • 225×584 pitch 125 mm. Groove coordinates are stored as centerlines in Carton A10 coordinates."
 )
 
 # ============================================================
@@ -371,13 +501,17 @@ def orientation_label(orient):
 # ============================================================
 # PARTITION / TOPOLOGY HELPERS
 # ============================================================
-def select_partition_system(vertical_h, vertical_clr):
+def select_partition_systems(vertical_h, vertical_clr):
+    """
+    Return every audited die-cut variant that is vertically feasible.
+    The solver will evaluate all variants and ranking will select the best one.
+    """
     required_vertical_h = vertical_h + vertical_clr
     if required_vertical_h <= 111.0:
-        return 111.0, PARTITION_SYSTEM[111.0]
+        return 111.0, PARTITION_VARIANTS_BY_HEIGHT[111.0]
     if required_vertical_h <= 225.0:
-        return 225.0, PARTITION_SYSTEM[225.0]
-    return None, None
+        return 225.0, PARTITION_VARIANTS_BY_HEIGHT[225.0]
+    return None, []
 
 
 def generate_partition_subsets(grooves):
@@ -442,6 +576,29 @@ def minimum_groove_compatible_span(grooves, required_span):
 
 def _candidate_axis_spans(dividers):
     return [dividers[i + 1] - dividers[i] for i in range(len(dividers) - 1)]
+
+
+def best_floor_fit_with_total_limit(max_fit_x, max_fit_y, max_total):
+    """
+    Choose qx × qy that maximizes floor pcs in one slot without exceeding max_total.
+
+    This makes an RFQ statement such as "2 pcs/slot" mean TWO total,
+    rather than the legacy Max-Pcs/Axis interpretation where 2 may become 2×2 = 4.
+    """
+    best = (1, 1)
+    best_score = (-1, -999, -999, -999)
+
+    for qx in range(1, max(1, max_fit_x) + 1):
+        for qy in range(1, max(1, max_fit_y) + 1):
+            total = qx * qy
+            if total > max_total:
+                continue
+            score = (total, -abs(qx - qy), -qx, -qy)
+            if score > best_score:
+                best_score = score
+                best = (qx, qy)
+
+    return best
 
 
 def find_complete_grid_span_requirement(
@@ -536,7 +693,7 @@ def effective_span_limits(
     """
     Return effective X/Y maximum span limits plus diagnostics.
 
-    V0.1.4.2 Dynamic mode remains COMPLETE-GRID aware:
+    V0.1.5 Dynamic mode remains COMPLETE-GRID aware:
       - start from the normal engineering baseline / Multi-Fit scaling,
       - enumerate real groove-subset grids,
       - require every cell to fit at least one packed product footprint,
@@ -710,9 +867,14 @@ def solve_a10_partition_layouts(
     pl,
     ph,
     esd_total_allowance,
+    nominal_esd_per_side,
+    effective_esd_per_side,
+    esd_model,
     vertical_clr,
     mode,
+    slot_limit_basis,
     max_pcs_per_axis,
+    max_total_pcs_per_slot,
     max_span_limit,
     guardrail_mode,
     allow_l,
@@ -735,237 +897,261 @@ def solve_a10_partition_layouts(
         el = orient["flat_l"]
         eh = orient["vert_h"]
 
-        part_height, system = select_partition_system(eh, vertical_clr)
-        if system is None:
+        part_height, feasible_systems = select_partition_systems(eh, vertical_clr)
+        if not feasible_systems:
             continue
 
-        layers = system["layers"]
-        groove_x = system["groove_x"]
-        groove_y = system["groove_y"]
-
-        # V0.1.4: ESD allowance belongs to the TWO FLOOR axes only.
-        # The Up-axis is pure product height for that orientation plus an
-        # independent Vertical / Top Clearance engineering input.
+        # ESD allowance belongs to the TWO FLOOR axes only.
+        # In Folded / Compressible mode this uses the engineer-entered EFFECTIVE
+        # folded-bag fit allowance rather than the nominal company allowance.
         target_w = ew + esd_total_allowance
         target_l = el + esd_total_allowance
         target_h = eh + vertical_clr
 
-        subsets_x = generate_partition_subsets(groove_x)
-        subsets_y = generate_partition_subsets(groove_y)
+        for system in feasible_systems:
+            layers = system["layers"]
+            groove_x = system["groove_x"]
+            groove_y = system["groove_y"]
 
-        (
-            eff_span_x,
-            eff_span_y,
-            min_groove_span_x,
-            min_groove_span_y,
-            complete_grid_req,
-            base_eff_span_x,
-            base_eff_span_y,
-        ) = effective_span_limits(
-            target_l,
-            target_w,
-            mode,
-            max_pcs_per_axis,
-            max_span_limit,
-            guardrail_mode,
-            groove_x,
-            groove_y,
-            subsets_x,
-            subsets_y,
-        )
+            subsets_x = generate_partition_subsets(groove_x)
+            subsets_y = generate_partition_subsets(groove_y)
 
-        min_complete_grid_span_x = (
-            complete_grid_req["complete_max_span_x"] if complete_grid_req is not None else None
-        )
-        min_complete_grid_span_y = (
-            complete_grid_req["complete_max_span_y"] if complete_grid_req is not None else None
-        )
+            (
+                eff_span_x,
+                eff_span_y,
+                min_groove_span_x,
+                min_groove_span_y,
+                complete_grid_req,
+                base_eff_span_x,
+                base_eff_span_y,
+            ) = effective_span_limits(
+                target_l,
+                target_w,
+                mode,
+                max_pcs_per_axis,
+                max_span_limit,
+                guardrail_mode,
+                groove_x,
+                groove_y,
+                subsets_x,
+                subsets_y,
+            )
 
-        span_requirements.append(
-            {
-                "orientation_id": orient["orientation_id"],
-                "up_axis": orient["up_axis"],
-                "allowed": orient["allowed"],
-                "part_height": part_height,
-                "target_l": target_l,
-                "target_w": target_w,
-                "min_groove_span_x": min_groove_span_x,
-                "min_groove_span_y": min_groove_span_y,
-                "min_complete_grid_span_x": min_complete_grid_span_x,
-                "min_complete_grid_span_y": min_complete_grid_span_y,
-                "base_eff_span_x": base_eff_span_x,
-                "base_eff_span_y": base_eff_span_y,
-                "eff_span_x": eff_span_x,
-                "eff_span_y": eff_span_y,
-            }
-        )
+            min_complete_grid_span_x = (
+                complete_grid_req["complete_max_span_x"] if complete_grid_req is not None else None
+            )
+            min_complete_grid_span_y = (
+                complete_grid_req["complete_max_span_y"] if complete_grid_req is not None else None
+            )
 
-        for x_dividers in subsets_x:
-            for y_dividers in subsets_y:
-                topo_ok, topo_note = topology_validation(x_dividers, y_dividers)
-                if not topo_ok:
-                    rejected_topology += 1
-                    continue
-
-                x_spans = [x_dividers[i + 1] - x_dividers[i] for i in range(len(x_dividers) - 1)]
-                y_spans = [y_dividers[i + 1] - y_dividers[i] for i in range(len(y_dividers) - 1)]
-
-                # Every cell must physically fit at least one product footprint.
-                if any(span < target_l for span in x_spans) or any(span < target_w for span in y_spans):
-                    rejected_fit += 1
-                    continue
-
-                # V0.1: span guardrail is now evaluated for every packing mode.
-                if any(span > eff_span_x for span in x_spans) or any(span > eff_span_y for span in y_spans):
-                    rejected_span += 1
-                    continue
-
-                valid_slots = []
-
-                for i in range(len(x_dividers) - 1):
-                    for j in range(len(y_dividers) - 1):
-                        slot_x = x_dividers[i + 1] - x_dividers[i]
-                        slot_y = y_dividers[j + 1] - y_dividers[j]
-
-                        if "Standard 1 PC/Slot" in mode:
-                            qty_x = 1
-                            qty_y = 1
-                            qty_z = 1
-                        else:
-                            qty_x = min(max_pcs_per_axis, max(1, int(slot_x // target_l)))
-                            qty_y = min(max_pcs_per_axis, max(1, int(slot_y // target_w)))
-
-                            if "Stack-Fit" in mode:
-                                # Each stacked product uses its own vertical requirement:
-                                # pure Up-axis dimension + Vertical / Top Clearance.
-                                qty_z = max(1, int(part_height // target_h))
-                            else:
-                                qty_z = 1
-
-                        pcs_slot = qty_x * qty_y * qty_z
-                        valid_slots.append(
-                            {
-                                "col_idx": i,
-                                "row_idx": j,
-                                "x_start": x_dividers[i],
-                                "x_end": x_dividers[i + 1],
-                                "y_start": y_dividers[j],
-                                "y_end": y_dividers[j + 1],
-                                "qty_x": qty_x,
-                                "qty_y": qty_y,
-                                "qty_z": qty_z,
-                                "pcs_per_slot": pcs_slot,
-                            }
-                        )
-
-                if not valid_slots:
-                    continue
-
-                qty_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
-                qty_per_partition_layer = sum(s["pcs_per_slot"] for s in valid_slots)
-                qty_box = qty_per_partition_layer * layers
-                base_slots_layer = len(valid_slots)
-
-                min_x_span, max_x_span, var_x = span_stats(x_dividers)
-                min_y_span, max_y_span, var_y = span_stats(y_dividers)
-                span_ratio = max(
-                    max_x_span / eff_span_x if eff_span_x > 0 else 999,
-                    max_y_span / eff_span_y if eff_span_y > 0 else 999,
-                )
-                slot_variation = var_x + var_y
-
-                grid_cx = (x_dividers[0] + x_dividers[-1]) / 2.0
-                grid_cy = (y_dividers[0] + y_dividers[-1]) / 2.0
-                center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
-
-                envelope_area = max(
-                    1.0,
-                    (x_dividers[-1] - x_dividers[0]) * (y_dividers[-1] - y_dividers[0]),
-                )
-                product_area_layer = qty_layer * ew * el
-                area_occupancy = min(100.0, (product_area_layer / envelope_area) * 100.0)
-
-                # Residual gap after accounting for the selected vertical requirement
-                # of every stacked product. ESD footprint allowance is NOT added here.
-                top_gap = part_height - (target_h * valid_slots[0]["qty_z"])
-                total_used_h = (part_height + PAD_T) * layers + PAD_T
-                carton_top_air_gap = CARTON_H - total_used_h
-
-                # V0.1.4.2 — quantify how close the CURRENT selected grid/capacity is
-                # to its next lateral ESD / slot-fit breakpoint.
-                fit_margin = calculate_fit_margin(
-                    valid_slots,
-                    target_l,
-                    target_w,
-                    esd_total_allowance,
-                )
-
-                option = {
+            span_requirements.append(
+                {
                     "orientation_id": orient["orientation_id"],
                     "up_axis": orient["up_axis"],
-                    "floor_axis_1": orient["floor_axis_1"],
-                    "floor_axis_2": orient["floor_axis_2"],
                     "allowed": orient["allowed"],
-                    "normal": orient["normal"],
-                    "orientation_priority": orient["priority"],
-                    "orient_label": orientation_label(orient),
-                    "flat_w": ew,
-                    "flat_l": el,
-                    "vert_h": eh,
-                    "p_w_disp": ew,
-                    "p_l_disp": el,
-                    "p_h_disp": eh,
-                    "target_w": target_w,
-                    "target_l": target_l,
-                    "target_h": target_h,
-                    "esd_total_allowance": esd_total_allowance,
-                    "vertical_clearance": vertical_clr,
                     "part_height": part_height,
-                    "layers": layers,
-                    "x_dividers": list(x_dividers),
-                    "y_dividers": list(y_dividers),
-                    # Backward-friendly aliases for renderer / BOM semantics.
-                    "ax": list(x_dividers),
-                    "ay": list(y_dividers),
-                    "x_bounds": [system["x_pad_start"]] + list(x_dividers) + [system["x_pad_end"]],
-                    "y_bounds": [system["y_pad_start"]] + list(y_dividers) + [system["y_pad_end"]],
-                    "valid_slots": valid_slots,
-                    "base_slots_layer": base_slots_layer,
-                    "base_qty_box": base_slots_layer * layers,
-                    "qty_layer": qty_layer,
-                    "qty_partition_layer": qty_per_partition_layer,
-                    "qty_box": qty_box,
-                    "total_dividers_per_layer": len(x_dividers) + len(y_dividers),
-                    "short_dividers_per_layer": len(x_dividers),
-                    "long_dividers_per_layer": len(y_dividers),
-                    "topology_note": topo_note,
-                    "eff_span_x": eff_span_x,
-                    "eff_span_y": eff_span_y,
+                    "partition_variant_id": system["variant_id"],
+                    "partition_variant_label": system["variant_label"],
+                    "target_l": target_l,
+                    "target_w": target_w,
                     "min_groove_span_x": min_groove_span_x,
                     "min_groove_span_y": min_groove_span_y,
                     "min_complete_grid_span_x": min_complete_grid_span_x,
                     "min_complete_grid_span_y": min_complete_grid_span_y,
                     "base_eff_span_x": base_eff_span_x,
                     "base_eff_span_y": base_eff_span_y,
-                    "max_span_x": max_x_span,
-                    "max_span_y": max_y_span,
-                    "span_ratio": span_ratio,
-                    "slot_variation": slot_variation,
-                    "center_offset": center_offset,
-                    "area_occupancy": area_occupancy,
-                    "top_gap": top_gap,
-                    "carton_top_air_gap": carton_top_air_gap,
-                    "min_slot_reserve_x": fit_margin["min_slot_reserve_x"],
-                    "min_slot_reserve_y": fit_margin["min_slot_reserve_y"],
-                    "esd_headroom_x_per_side": fit_margin["esd_headroom_x_per_side"],
-                    "esd_headroom_y_per_side": fit_margin["esd_headroom_y_per_side"],
-                    "esd_headroom_per_side": fit_margin["esd_headroom_per_side"],
-                    "max_esd_per_side_current_layout": fit_margin["max_esd_per_side_current_layout"],
-                    "fit_margin_status": fit_margin["fit_margin_status"],
-                    "fit_margin_note": fit_margin["fit_margin_note"],
-                    "limiting_floor_direction": fit_margin["limiting_floor_direction"],
+                    "eff_span_x": eff_span_x,
+                    "eff_span_y": eff_span_y,
                 }
-                options.append(option)
+            )
+
+            for x_dividers in subsets_x:
+                for y_dividers in subsets_y:
+                    topo_ok, topo_note = topology_validation(x_dividers, y_dividers)
+                    if not topo_ok:
+                        rejected_topology += 1
+                        continue
+
+                    x_spans = [x_dividers[i + 1] - x_dividers[i] for i in range(len(x_dividers) - 1)]
+                    y_spans = [y_dividers[i + 1] - y_dividers[i] for i in range(len(y_dividers) - 1)]
+
+                    # Every cell must physically fit at least one product footprint.
+                    if any(span < target_l for span in x_spans) or any(span < target_w for span in y_spans):
+                        rejected_fit += 1
+                        continue
+
+                    # V0.1: span guardrail is now evaluated for every packing mode.
+                    if any(span > eff_span_x for span in x_spans) or any(span > eff_span_y for span in y_spans):
+                        rejected_span += 1
+                        continue
+
+                    valid_slots = []
+
+                    for i in range(len(x_dividers) - 1):
+                        for j in range(len(y_dividers) - 1):
+                            slot_x = x_dividers[i + 1] - x_dividers[i]
+                            slot_y = y_dividers[j + 1] - y_dividers[j]
+
+                            if "Standard 1 PC/Slot" in mode:
+                                qty_x = 1
+                                qty_y = 1
+                                qty_z = 1
+                            else:
+                                max_fit_x = max(1, int(slot_x // target_l))
+                                max_fit_y = max(1, int(slot_y // target_w))
+
+                                if slot_limit_basis.startswith("Max Total"):
+                                    qty_x, qty_y = best_floor_fit_with_total_limit(
+                                        max_fit_x,
+                                        max_fit_y,
+                                        max_total_pcs_per_slot,
+                                    )
+                                else:
+                                    qty_x = min(max_pcs_per_axis, max_fit_x)
+                                    qty_y = min(max_pcs_per_axis, max_fit_y)
+
+                                if "Stack-Fit" in mode:
+                                    # Vertical stack remains a separate factor.
+                                    # The total-slot control limits the FLOOR arrangement.
+                                    qty_z = max(1, int(part_height // target_h))
+                                else:
+                                    qty_z = 1
+
+                            pcs_slot = qty_x * qty_y * qty_z
+                            valid_slots.append(
+                                {
+                                    "col_idx": i,
+                                    "row_idx": j,
+                                    "x_start": x_dividers[i],
+                                    "x_end": x_dividers[i + 1],
+                                    "y_start": y_dividers[j],
+                                    "y_end": y_dividers[j + 1],
+                                    "qty_x": qty_x,
+                                    "qty_y": qty_y,
+                                    "qty_z": qty_z,
+                                    "pcs_per_slot": pcs_slot,
+                                }
+                            )
+
+                    if not valid_slots:
+                        continue
+
+                    qty_layer = sum(s["qty_x"] * s["qty_y"] for s in valid_slots)
+                    qty_per_partition_layer = sum(s["pcs_per_slot"] for s in valid_slots)
+                    qty_box = qty_per_partition_layer * layers
+                    base_slots_layer = len(valid_slots)
+
+                    min_x_span, max_x_span, var_x = span_stats(x_dividers)
+                    min_y_span, max_y_span, var_y = span_stats(y_dividers)
+                    span_ratio = max(
+                        max_x_span / eff_span_x if eff_span_x > 0 else 999,
+                        max_y_span / eff_span_y if eff_span_y > 0 else 999,
+                    )
+                    slot_variation = var_x + var_y
+
+                    grid_cx = (x_dividers[0] + x_dividers[-1]) / 2.0
+                    grid_cy = (y_dividers[0] + y_dividers[-1]) / 2.0
+                    center_offset = abs(grid_cx - CARTON_CX) + abs(grid_cy - CARTON_CY)
+
+                    envelope_area = max(
+                        1.0,
+                        (x_dividers[-1] - x_dividers[0]) * (y_dividers[-1] - y_dividers[0]),
+                    )
+                    product_area_layer = qty_layer * ew * el
+                    area_occupancy = min(100.0, (product_area_layer / envelope_area) * 100.0)
+
+                    # Residual gap after accounting for the selected vertical requirement
+                    # of every stacked product. ESD footprint allowance is NOT added here.
+                    top_gap = part_height - (target_h * valid_slots[0]["qty_z"])
+                    total_used_h = (part_height + PAD_T) * layers + PAD_T
+                    carton_top_air_gap = CARTON_H - total_used_h
+
+                    # V0.1.5 — quantify how close the CURRENT selected grid/capacity is
+                    # to its next lateral ESD / slot-fit breakpoint.
+                    fit_margin = calculate_fit_margin(
+                        valid_slots,
+                        target_l,
+                        target_w,
+                        esd_total_allowance,
+                    )
+
+                    option = {
+                        "orientation_id": orient["orientation_id"],
+                        "up_axis": orient["up_axis"],
+                        "floor_axis_1": orient["floor_axis_1"],
+                        "floor_axis_2": orient["floor_axis_2"],
+                        "allowed": orient["allowed"],
+                        "normal": orient["normal"],
+                        "orientation_priority": orient["priority"],
+                        "orient_label": orientation_label(orient),
+                        "flat_w": ew,
+                        "flat_l": el,
+                        "vert_h": eh,
+                        "p_w_disp": ew,
+                        "p_l_disp": el,
+                        "p_h_disp": eh,
+                        "target_w": target_w,
+                        "target_l": target_l,
+                        "target_h": target_h,
+                        "esd_total_allowance": esd_total_allowance,
+                        "vertical_clearance": vertical_clr,
+                        "esd_fit_model": esd_model,
+                        "nominal_esd_per_side": nominal_esd_per_side,
+                        "effective_esd_per_side": effective_esd_per_side,
+                        "slot_limit_basis": slot_limit_basis,
+                        "max_total_pcs_per_slot": max_total_pcs_per_slot,
+                        "max_pcs_per_axis": max_pcs_per_axis,
+                        "part_height": part_height,
+                        "partition_variant_id": system["variant_id"],
+                        "partition_variant_label": system["variant_label"],
+                        "variant_priority": system["variant_priority"],
+                        "short_partition_name": system["short_partition_name"],
+                        "long_partition_name": system["long_partition_name"],
+                        "layers": layers,
+                        "x_dividers": list(x_dividers),
+                        "y_dividers": list(y_dividers),
+                        # Backward-friendly aliases for renderer / BOM semantics.
+                        "ax": list(x_dividers),
+                        "ay": list(y_dividers),
+                        "x_bounds": [system["x_pad_start"]] + list(x_dividers) + [system["x_pad_end"]],
+                        "y_bounds": [system["y_pad_start"]] + list(y_dividers) + [system["y_pad_end"]],
+                        "valid_slots": valid_slots,
+                        "base_slots_layer": base_slots_layer,
+                        "base_qty_box": base_slots_layer * layers,
+                        "qty_layer": qty_layer,
+                        "qty_partition_layer": qty_per_partition_layer,
+                        "qty_box": qty_box,
+                        "total_dividers_per_layer": len(x_dividers) + len(y_dividers),
+                        "short_dividers_per_layer": len(x_dividers),
+                        "long_dividers_per_layer": len(y_dividers),
+                        "topology_note": topo_note,
+                        "eff_span_x": eff_span_x,
+                        "eff_span_y": eff_span_y,
+                        "min_groove_span_x": min_groove_span_x,
+                        "min_groove_span_y": min_groove_span_y,
+                        "min_complete_grid_span_x": min_complete_grid_span_x,
+                        "min_complete_grid_span_y": min_complete_grid_span_y,
+                        "base_eff_span_x": base_eff_span_x,
+                        "base_eff_span_y": base_eff_span_y,
+                        "max_span_x": max_x_span,
+                        "max_span_y": max_y_span,
+                        "span_ratio": span_ratio,
+                        "slot_variation": slot_variation,
+                        "center_offset": center_offset,
+                        "area_occupancy": area_occupancy,
+                        "top_gap": top_gap,
+                        "carton_top_air_gap": carton_top_air_gap,
+                        "min_slot_reserve_x": fit_margin["min_slot_reserve_x"],
+                        "min_slot_reserve_y": fit_margin["min_slot_reserve_y"],
+                        "esd_headroom_x_per_side": fit_margin["esd_headroom_x_per_side"],
+                        "esd_headroom_y_per_side": fit_margin["esd_headroom_y_per_side"],
+                        "esd_headroom_per_side": fit_margin["esd_headroom_per_side"],
+                        "max_esd_per_side_current_layout": fit_margin["max_esd_per_side_current_layout"],
+                        "fit_margin_status": fit_margin["fit_margin_status"],
+                        "fit_margin_note": fit_margin["fit_margin_note"],
+                        "limiting_floor_direction": fit_margin["limiting_floor_direction"],
+                    }
+                    options.append(option)
 
     debug = {
         "rejected_topology": rejected_topology,
@@ -988,6 +1174,7 @@ def option_rank(opt):
     return (
         opt["qty_box"],
         opt["orientation_priority"],
+        opt.get("variant_priority", 0),
         -opt["vert_h"],
         opt["qty_layer"],
         -opt["span_ratio"],
@@ -1005,6 +1192,7 @@ def dedupe_options(options):
         key = (
             opt["orientation_id"],
             opt["part_height"],
+            opt.get("partition_variant_id", "legacy"),
             opt["qty_box"],
             opt["qty_layer"],
             opt["layers"],
@@ -1022,7 +1210,7 @@ def dedupe_options(options):
 # ============================================================
 def validate_active_dividers_against_grooves(opt, tolerance=0.01):
     """Confirm every active divider lies on an audited available groove centerline."""
-    system = PARTITION_SYSTEM[opt["part_height"]]
+    system = get_partition_system_for_option(opt)
     problems = []
 
     def check_axis(axis_name, active_values, available_values):
@@ -1063,7 +1251,7 @@ def draw_top_view_svg(opt):
     view_w = CARTON_L * scale + pad_x * 2
     view_h = CARTON_W * scale + pad_y * 2
 
-    system = PARTITION_SYSTEM[opt["part_height"]]
+    system = get_partition_system_for_option(opt)
     x_start_pad = system["x_pad_start"]
     x_end_pad = system["x_pad_end"]
     y_start_pad = system["y_pad_start"]
@@ -1107,6 +1295,24 @@ def draw_top_view_svg(opt):
         svg += (
             f'<line x1="{pad_x+x_start_pad*scale}" y1="{py}" x2="{pad_x+x_end_pad*scale}" y2="{py}" '
             f'stroke="#22c55e" stroke-width="1" stroke-dasharray="3,3" opacity="0.65" />'
+        )
+
+    # Groove edge ticks remain visible even when a red active partition line
+    # completely covers the green dotted groove reference.
+    tick = 7
+    for x in groove_x:
+        px = pad_x + x * scale
+        y0 = pad_y + y_start_pad * scale
+        svg += (
+            f'<line x1="{px}" y1="{y0-tick}" x2="{px}" y2="{y0-1}" '
+            f'stroke="#16a34a" stroke-width="2.2" />'
+        )
+    for y in groove_y:
+        py = pad_y + y * scale
+        x0 = pad_x + x_start_pad * scale
+        svg += (
+            f'<line x1="{x0-tick}" y1="{py}" x2="{x0-1}" y2="{py}" '
+            f'stroke="#16a34a" stroke-width="2.2" />'
         )
 
     # Active partition sheets — red.
@@ -1162,7 +1368,7 @@ def draw_top_view_svg(opt):
 
     svg += (
         f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" font-size="11" '
-        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available A10 Groove • Blue dashed = ESD Footprint Envelope</text>'
+        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available Groove • Green edge ticks = All Groove Positions • Blue dashed = Effective Fit Envelope</text>'
     )
     svg += '</svg>'
     return svg
@@ -1186,7 +1392,7 @@ def draw_side_view_svg(opt):
     env_h_px = opt["target_h"] * scale_y
     pad_t_px = PAD_T * scale_y
 
-    system = PARTITION_SYSTEM[opt["part_height"]]
+    system = get_partition_system_for_option(opt)
     x_start_pad = system["x_pad_start"]
     x_end_pad = system["x_pad_end"]
     envelope_w = x_end_pad - x_start_pad
@@ -1307,6 +1513,8 @@ def build_bom(opt):
     layers = opt["layers"]
     paper_pads = layers + 1
     htxt = "111" if opt["part_height"] == 111.0 else "225"
+    short_name = opt.get("short_partition_name", f"PARTITION {htxt}×393")
+    long_name = opt.get("long_partition_name", f"PARTITION {htxt}×584")
 
     return [
         {
@@ -1315,12 +1523,12 @@ def build_bom(opt):
             "spec": f"OD {fmt_num(CARTON_OD_L)}×{fmt_num(CARTON_OD_W)}×{fmt_num(CARTON_OD_H)} mm | ID {fmt_num(CARTON_L)}×{fmt_num(CARTON_W)}×{fmt_num(CARTON_H)} mm",
         },
         {
-            "name": f"Short Partition — PARTITION {htxt}×393",
+            "name": f"Short Partition — {short_name}",
             "qty": f"{opt['short_dividers_per_layer'] * layers} Pcs",
             "spec": f"{opt['short_dividers_per_layer']} sheet(s) / partition layer × {layers} layer(s)",
         },
         {
-            "name": f"Long Partition — PARTITION {htxt}×584",
+            "name": f"Long Partition — {long_name}",
             "qty": f"{opt['long_dividers_per_layer'] * layers} Pcs",
             "spec": f"{opt['long_dividers_per_layer']} sheet(s) / partition layer × {layers} layer(s)",
         },
@@ -1368,6 +1576,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     status_badges = (
         badge(f"{opt['up_axis']}-Up", up_tone)
         + badge(f"Partition {int(opt['part_height'])} mm", "info")
+        + badge(opt.get("long_partition_name", "Long partition"), "info")
         + badge(opt["topology_note"], "good")
     )
     if opt["up_axis"] != "H":
@@ -1395,7 +1604,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
 
     # --------------------------------------------------------
-    # V0.1.4.2 — FIT MARGIN / CRITICAL BOUNDARY
+    # V0.1.5 — FIT MARGIN / CRITICAL BOUNDARY
     # --------------------------------------------------------
     fm1, fm2, fm3, fm4 = st.columns(4)
     fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
@@ -1411,7 +1620,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
             "⚠️ **Critical Fit / Zero Lateral Reserve** — "
             f"current packed footprint uses the selected slot capacity at its nominal limit "
             f"(limiting direction: {opt['limiting_floor_direction']}). "
-            f"Current ESD allowance = **{fmt_num(opt['esd_total_allowance'] / 2.0)} mm/side**; "
+            f"Current solver fit allowance = **{fmt_num(opt['effective_esd_per_side'])} mm/side**; "
             f"the current selected grid/capacity limit is approximately "
             f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**. "
             "Increasing beyond this point may reduce capacity or force a different partition grid."
@@ -1479,9 +1688,14 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         p_l,
         p_h,
         total_esd_allowance,
+        esd_allowance_per_side,
+        solver_esd_allowance_per_side,
+        esd_fit_model,
         vertical_clearance,
         packing_mode,
+        slot_limit_basis,
         max_pcs_axis,
+        max_total_pcs_slot,
         max_slot_span,
         span_mode,
         allow_l_up,
@@ -1511,24 +1725,26 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Fit Margin / Critical Boundary + Complete-Grid-Aware Dynamic Span + Drawing-Corrected Geometry"
+    f"{APP_VERSION} • {MODULE_NAME} — Partition Variant Auto-Select + Folded/Compressible Bag Support + Fit Margin"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
 )
 
 st.subheader("📦 Carton A10 Working Condition")
-wc1, wc2, wc3, wc4, wc5 = st.columns(5)
+wc1, wc2, wc3, wc4, wc5, wc6 = st.columns(6)
 wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_H)} mm")
 wc2.metric("Pure Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
-wc3.metric("ESD Footprint Allowance", f"{fmt_num(esd_allowance_per_side)} mm / side")
-wc4.metric("Vertical Clearance", f"{fmt_num(vertical_clearance)} mm")
-wc5.metric("Valid Layouts", f"{len(options)}")
+wc3.metric("Nominal ESD", f"{fmt_num(esd_allowance_per_side)} mm / side")
+wc4.metric("Solver Fit Allowance", f"{fmt_num(solver_esd_allowance_per_side)} mm / side")
+wc5.metric("Vertical Clearance", f"{fmt_num(vertical_clearance)} mm")
+wc6.metric("Valid Layouts", f"{len(options)}")
 
 st.info(
     f"**Normal H-Up Effective Condition:** Footprint {fmt_num(effective_product_w)} × "
     f"{fmt_num(effective_product_l)} mm • Vertical requirement {fmt_num(effective_product_h)} mm.  "
-    f"ESD contributes +{fmt_num(total_esd_allowance)} mm to each floor dimension only."
+    f"ESD fit model = **{esd_fit_model}** • solver contributes +{fmt_num(total_esd_allowance)} mm "
+    f"to each floor dimension only."
 )
 
 allowed_txt = ["H-Up"]
@@ -1539,8 +1755,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.4.2 adds nominal Fit Margin / Critical Boundary analysis on top of drawing-audited groove centerlines and complete-grid-aware Dynamic Span. ESD allowance is applied only to the two floor axes of each orientation; "
-    "the Up-axis uses pure dimension + separate Vertical / Top Clearance. The legacy Excel table remains reference-only during validation."
+    "V0.1.5 adds automatic 111×584 vs 111×584-01 die-cut variant selection and a Folded / Compressible ESD Bag trial model. "
+    "The solver still uses drawing-audited groove centerlines, complete-grid-aware Dynamic Span, explicit orientation permission and Fit Margin screening."
 )
 
 st.divider()
@@ -1560,7 +1776,7 @@ if not options:
         req_y = diag.get("min_complete_grid_span_y")
         if req_x is None or req_y is None:
             st.warning(
-                f"Complete-grid diagnostic — {diag['up_axis']}-Up has no groove-subset grid where every cell fits the packed footprint and the topology remains valid."
+                f"Complete-grid diagnostic — {diag['up_axis']}-Up / {diag.get('partition_variant_label','partition variant')} has no groove-subset grid where every cell fits the packed footprint and the topology remains valid."
             )
         elif span_mode.startswith("Dynamic"):
             st.info(
@@ -1657,6 +1873,13 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Status": "Allowed" if opt["allowed"] else "Locked",
                     "Floor × Height": opt["orient_label"],
                     "Partition": f"{int(opt['part_height'])} mm",
+                    "Long Partition Variant": opt.get("long_partition_name", ""),
+                    "ESD Fit Model": "Folded" if opt.get("esd_fit_model", "").startswith("Folded") else "Standard",
+                    "Slot Limit": (
+                        f"Total {opt.get('max_total_pcs_per_slot', 1)} pcs/slot"
+                        if opt.get("slot_limit_basis", "").startswith("Max Total")
+                        else opt.get("slot_limit_basis", "")
+                    ),
                     "Grid": f"{len(opt['x_dividers'])-1}×{len(opt['y_dividers'])-1}",
                     "Base Slots/Layer": opt["base_slots_layer"],
                     "Pcs/Layer": opt["qty_layer"],
@@ -1684,14 +1907,17 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Orientation-aware:** H-Up is the default normal reference. L-Up / W-Up are not used in recommendation unless the user explicitly enables them.
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
-- **ESD Footprint Allowance:** Product inputs are PURE dimensions. Current ESD allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm** to each of the TWO FLOOR axes only.
+- **ESD Bag Fit Model:** current model = **{esd_fit_model}**. Company / nominal ESD = **{fmt_num(esd_allowance_per_side)} mm/side**; solver effective lateral fit allowance = **{fmt_num(solver_esd_allowance_per_side)} mm/side**.
+- **Folded / Compressible limitation:** folded-bag mode does not treat the nominal bag allowance as a rigid geometric envelope. It requires sample / packing-trial confirmation and should not be used as a material-thickness claim.
 - **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
 - **Fit Margin limitation:** this is nominal geometry only; Product tolerance, ESD bag forming variation, partition die-cut tolerance and assembly deformation are not included.
 - **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition 111/225 selection and Stack-Fit vertical capacity use **Pure Up-axis + Vertical Clearance**; ESD footprint allowance is not added to the Up-axis.
-- **Stack-Fit vertical logic:** every stacked product uses its own vertical requirement (`pure Up-axis + vertical clearance`).
+- **Slot Quantity Limit:** current basis = **{slot_limit_basis}**. In `Max Total Pcs / Slot` mode, an RFQ requirement such as **2 pcs/slot** is enforced as the maximum TOTAL floor quantity, avoiding the legacy 2×2=4 interpretation.
+- **Stack-Fit vertical logic:** every stacked product uses its own vertical requirement (`pure Up-axis + vertical clearance`). In total-slot mode, the total floor limit is applied before the vertical stack factor.
 - **Span Guardrail:** checked in every packing mode. **Dynamic** keeps the baseline but auto-relaxes only when the actual A10 groove pitch requires a larger minimum span to fit one packed product. **Strict** uses the baseline as a hard maximum. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
 - **Strength limitation:** the span check is a geometry-based engineering screening only; it is **not** BCT / ECT / compression-strength validation.
-- **Groove constrained:** candidate partition sheets are selected only from the defined Carton A10 groove coordinates.
+- **Partition Variant Auto-Select:** for 111-mm systems the solver evaluates both **111×584 Standard (5 grooves / 140-mm pitch)** and **111×584-01 (9 grooves / 70-mm pitch)** against the common 111×393 short partition.
+- **Groove constrained:** candidate partition sheets are selected only from the audited Carton A10 groove coordinates of the selected die-cut variant.
 - **BOM:** partition quantities follow the number of active short/long partition sheets per layer × packing layers.
 - **Legacy Excel reference:** historical A10 configurations are being audited as validation references only; they are not treated as master logic or automatically imported into the solver.
         """
