@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.4.1"
+APP_VERSION = "V0.1.4.2"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -83,9 +83,9 @@ def _geometry_signature():
 GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Solver/cache logic revision guard.
-# V0.1.4.1 keeps the ESD footprint-only model and fixes Dynamic Span so it
-# evaluates a COMPLETE feasible partition grid, not just an isolated groove pair.
-SOLVER_LOGIC_SIGNATURE = "V0141_COMPLETE_GRID_DYNAMIC_SPAN_R1"
+# V0.1.4.2 keeps the complete-grid-aware Dynamic Span model and adds
+# selected-layout Fit Margin / Critical Boundary analysis for the current ESD allowance.
+SOLVER_LOGIC_SIGNATURE = "V0142_FIT_MARGIN_CRITICAL_BOUNDARY_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 PARTITION_SYSTEM = {
@@ -273,7 +273,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.4.1: Complete-Grid-Aware Dynamic Span + ESD Footprint-Only + Drawing-Corrected Geometry"
+    "✅ V0.1.4.2: Fit Margin / Critical Boundary + Complete-Grid-Aware Dynamic Span + Drawing-Corrected Geometry"
 )
 
 st.sidebar.caption(
@@ -536,7 +536,7 @@ def effective_span_limits(
     """
     Return effective X/Y maximum span limits plus diagnostics.
 
-    V0.1.4.1 Dynamic mode is COMPLETE-GRID aware:
+    V0.1.4.2 Dynamic mode remains COMPLETE-GRID aware:
       - start from the normal engineering baseline / Multi-Fit scaling,
       - enumerate real groove-subset grids,
       - require every cell to fit at least one packed product footprint,
@@ -597,6 +597,112 @@ def span_stats(bounds):
 
 # ============================================================
 # SOLVER
+# ============================================================
+# FIT MARGIN / CRITICAL BOUNDARY ANALYSIS
+# ============================================================
+def calculate_fit_margin(
+    valid_slots,
+    target_l,
+    target_w,
+    esd_total_allowance,
+):
+    """
+    Nominal geometry margin for the CURRENT selected layout/capacity.
+
+    Solver coordinate convention:
+      - slot X is checked against target_l
+      - slot Y is checked against target_w
+
+    For a slot carrying qty_x × qty_y products:
+      reserve_x = slot_x - qty_x * target_l
+      reserve_y = slot_y - qty_y * target_w
+
+    Because ESD allowance is entered PER SIDE, increasing the input by delta mm/side
+    increases each packed floor dimension by 2*delta. Therefore the maximum additional
+    per-side allowance that preserves the CURRENT qty_x / qty_y in the CURRENT grid is:
+      reserve_x / (2 * qty_x)
+      reserve_y / (2 * qty_y)
+
+    This is a nominal geometry screening only. Product tolerance, ESD bag forming
+    variation, partition die-cut tolerance and assembly deformation are NOT included.
+    """
+    if not valid_slots:
+        return {
+            "min_slot_reserve_x": 0.0,
+            "min_slot_reserve_y": 0.0,
+            "esd_headroom_x_per_side": 0.0,
+            "esd_headroom_y_per_side": 0.0,
+            "esd_headroom_per_side": 0.0,
+            "max_esd_per_side_current_layout": esd_total_allowance / 2.0,
+            "fit_margin_status": "CRITICAL",
+            "fit_margin_note": "No valid slot data",
+            "limiting_floor_direction": "X/Y",
+        }
+
+    reserve_x_values = []
+    reserve_y_values = []
+    headroom_x_values = []
+    headroom_y_values = []
+
+    for slot in valid_slots:
+        slot_x = slot["x_end"] - slot["x_start"]
+        slot_y = slot["y_end"] - slot["y_start"]
+
+        qty_x = max(1, int(slot["qty_x"]))
+        qty_y = max(1, int(slot["qty_y"]))
+
+        reserve_x = slot_x - (qty_x * target_l)
+        reserve_y = slot_y - (qty_y * target_w)
+
+        if abs(reserve_x) < 1e-9:
+            reserve_x = 0.0
+        if abs(reserve_y) < 1e-9:
+            reserve_y = 0.0
+
+        reserve_x_values.append(reserve_x)
+        reserve_y_values.append(reserve_y)
+        headroom_x_values.append(reserve_x / (2.0 * qty_x))
+        headroom_y_values.append(reserve_y / (2.0 * qty_y))
+
+    min_reserve_x = min(reserve_x_values)
+    min_reserve_y = min(reserve_y_values)
+    headroom_x = min(headroom_x_values)
+    headroom_y = min(headroom_y_values)
+    headroom = min(headroom_x, headroom_y)
+
+    current_esd_per_side = esd_total_allowance / 2.0
+    max_esd_per_side = current_esd_per_side + headroom
+
+    if headroom_x < headroom_y - 1e-9:
+        limiting_direction = "X"
+    elif headroom_y < headroom_x - 1e-9:
+        limiting_direction = "Y"
+    else:
+        limiting_direction = "X/Y"
+
+    if headroom <= 0.01:
+        status = "CRITICAL"
+        note = "Zero / near-zero lateral reserve at the selected capacity."
+    elif headroom <= 0.50:
+        status = "TIGHT"
+        note = "Very small reserve; the next 0.5 mm/side allowance step may change capacity/grid."
+    else:
+        status = "OK"
+        note = "Nominal lateral reserve remains before the selected layout loses current capacity."
+
+    return {
+        "min_slot_reserve_x": min_reserve_x,
+        "min_slot_reserve_y": min_reserve_y,
+        "esd_headroom_x_per_side": headroom_x,
+        "esd_headroom_y_per_side": headroom_y,
+        "esd_headroom_per_side": headroom,
+        "max_esd_per_side_current_layout": max_esd_per_side,
+        "fit_margin_status": status,
+        "fit_margin_note": note,
+        "limiting_floor_direction": limiting_direction,
+    }
+
+
 # ============================================================
 @st.cache_data(show_spinner=False)
 def solve_a10_partition_layouts(
@@ -785,6 +891,15 @@ def solve_a10_partition_layouts(
                 total_used_h = (part_height + PAD_T) * layers + PAD_T
                 carton_top_air_gap = CARTON_H - total_used_h
 
+                # V0.1.4.2 — quantify how close the CURRENT selected grid/capacity is
+                # to its next lateral ESD / slot-fit breakpoint.
+                fit_margin = calculate_fit_margin(
+                    valid_slots,
+                    target_l,
+                    target_w,
+                    esd_total_allowance,
+                )
+
                 option = {
                     "orientation_id": orient["orientation_id"],
                     "up_axis": orient["up_axis"],
@@ -840,6 +955,15 @@ def solve_a10_partition_layouts(
                     "area_occupancy": area_occupancy,
                     "top_gap": top_gap,
                     "carton_top_air_gap": carton_top_air_gap,
+                    "min_slot_reserve_x": fit_margin["min_slot_reserve_x"],
+                    "min_slot_reserve_y": fit_margin["min_slot_reserve_y"],
+                    "esd_headroom_x_per_side": fit_margin["esd_headroom_x_per_side"],
+                    "esd_headroom_y_per_side": fit_margin["esd_headroom_y_per_side"],
+                    "esd_headroom_per_side": fit_margin["esd_headroom_per_side"],
+                    "max_esd_per_side_current_layout": fit_margin["max_esd_per_side_current_layout"],
+                    "fit_margin_status": fit_margin["fit_margin_status"],
+                    "fit_margin_note": fit_margin["fit_margin_note"],
+                    "limiting_floor_direction": fit_margin["limiting_floor_direction"],
                 }
                 options.append(option)
 
@@ -1270,6 +1394,48 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     c7.metric("Product Area Occupancy", f"{opt['area_occupancy']:.1f}%")
     c8.metric("Partition Sheets / Layer", f"{opt['total_dividers_per_layer']}")
 
+    # --------------------------------------------------------
+    # V0.1.4.2 — FIT MARGIN / CRITICAL BOUNDARY
+    # --------------------------------------------------------
+    fm1, fm2, fm3, fm4 = st.columns(4)
+    fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
+    fm2.metric("Min Slot Reserve Y", f"{fmt_num(opt['min_slot_reserve_y'])} mm")
+    fm3.metric("ESD Headroom / Side", f"{fmt_num(opt['esd_headroom_per_side'])} mm")
+    fm4.metric(
+        "Selected-Layout ESD Limit",
+        f"{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side",
+    )
+
+    if opt["fit_margin_status"] == "CRITICAL":
+        st.warning(
+            "⚠️ **Critical Fit / Zero Lateral Reserve** — "
+            f"current packed footprint uses the selected slot capacity at its nominal limit "
+            f"(limiting direction: {opt['limiting_floor_direction']}). "
+            f"Current ESD allowance = **{fmt_num(opt['esd_total_allowance'] / 2.0)} mm/side**; "
+            f"the current selected grid/capacity limit is approximately "
+            f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**. "
+            "Increasing beyond this point may reduce capacity or force a different partition grid."
+        )
+    elif opt["fit_margin_status"] == "TIGHT":
+        st.warning(
+            "⚠️ **Tight Fit Margin** — "
+            f"only **{fmt_num(opt['esd_headroom_per_side'])} mm/side** nominal ESD headroom remains "
+            f"before the current selected grid/capacity reaches its next fit breakpoint "
+            f"(limiting direction: {opt['limiting_floor_direction']})."
+        )
+    else:
+        st.info(
+            "✅ **Fit Margin Available** — "
+            f"minimum nominal ESD headroom = **{fmt_num(opt['esd_headroom_per_side'])} mm/side**; "
+            f"current selected grid/capacity remains geometrically valid up to approximately "
+            f"**{fmt_num(opt['max_esd_per_side_current_layout'])} mm/side**."
+        )
+
+    st.caption(
+        "Fit Margin is nominal geometry screening only; product tolerance, ESD bag forming variation, "
+        "partition die-cut tolerance and assembly deformation are not included."
+    )
+
     st.caption(
         f"Effective orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} footprint × {fmt_num(opt['target_h'])} mm vertical • "
         f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
@@ -1345,7 +1511,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Complete-Grid-Aware Dynamic Span + ESD Footprint-Only + Drawing-Corrected Geometry"
+    f"{APP_VERSION} • {MODULE_NAME} — Fit Margin / Critical Boundary + Complete-Grid-Aware Dynamic Span + Drawing-Corrected Geometry"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -1373,7 +1539,7 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.4.1 uses drawing-audited groove centerlines, PURE Product Dimension, and complete-grid-aware Dynamic Span. ESD allowance is applied only to the two floor axes of each orientation; "
+    "V0.1.4.2 adds nominal Fit Margin / Critical Boundary analysis on top of drawing-audited groove centerlines and complete-grid-aware Dynamic Span. ESD allowance is applied only to the two floor axes of each orientation; "
     "the Up-axis uses pure dimension + separate Vertical / Top Clearance. The legacy Excel table remains reference-only during validation."
 )
 
@@ -1500,6 +1666,11 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Long Part./Layer": opt["long_dividers_per_layer"],
                     "Max Span X": round(opt["max_span_x"], 1),
                     "Max Span Y": round(opt["max_span_y"], 1),
+                    "Min Reserve X": round(opt["min_slot_reserve_x"], 2),
+                    "Min Reserve Y": round(opt["min_slot_reserve_y"], 2),
+                    "ESD Headroom/Side": round(opt["esd_headroom_per_side"], 2),
+                    "ESD Limit/Side": round(opt["max_esd_per_side_current_layout"], 2),
+                    "Fit Status": opt["fit_margin_status"],
                     "Area Occupancy %": round(opt["area_occupancy"], 1),
                 }
             )
@@ -1514,6 +1685,8 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
 - **ESD Footprint Allowance:** Product inputs are PURE dimensions. Current ESD allowance = **{fmt_num(esd_allowance_per_side)} mm/side** → total **+{fmt_num(total_esd_allowance)} mm** to each of the TWO FLOOR axes only.
+- **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
+- **Fit Margin limitation:** this is nominal geometry only; Product tolerance, ESD bag forming variation, partition die-cut tolerance and assembly deformation are not included.
 - **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition 111/225 selection and Stack-Fit vertical capacity use **Pure Up-axis + Vertical Clearance**; ESD footprint allowance is not added to the Up-axis.
 - **Stack-Fit vertical logic:** every stacked product uses its own vertical requirement (`pure Up-axis + vertical clearance`).
 - **Span Guardrail:** checked in every packing mode. **Dynamic** keeps the baseline but auto-relaxes only when the actual A10 groove pitch requires a larger minimum span to fit one packed product. **Strict** uses the baseline as a hard maximum. Current mode = **{span_mode}**; baseline = **{fmt_num(max_slot_span)} mm**.
