@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.4"
+APP_VERSION = "V0.1.4.1"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -83,9 +83,9 @@ def _geometry_signature():
 GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Solver/cache logic revision guard.
-# V0.1.4 changes ESD allowance to FLOOR/FOOTPRINT axes only; the Up-axis
-# uses pure product dimension plus a separate Vertical / Top Clearance input.
-SOLVER_LOGIC_SIGNATURE = "V014_ESD_FOOTPRINT_ONLY_VERTICAL_CLEARANCE_R1"
+# V0.1.4.1 keeps the ESD footprint-only model and fixes Dynamic Span so it
+# evaluates a COMPLETE feasible partition grid, not just an isolated groove pair.
+SOLVER_LOGIC_SIGNATURE = "V0141_COMPLETE_GRID_DYNAMIC_SPAN_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 PARTITION_SYSTEM = {
@@ -266,14 +266,14 @@ span_mode = st.sidebar.selectbox(
     ],
     index=0,
     help=(
-        "Dynamic จะรักษา Baseline เป็นหลัก และถ้า groove จริงของ A10 บังคับให้ span ขั้นต่ำที่ใส่สินค้าได้ใหญ่กว่า Baseline "
-        "ระบบจะผ่อนเฉพาะเท่าที่จำเป็นถึง groove-compatible span นั้น. Multi-Fit / Stack-Fit ยังคง scale ตาม Max Pcs / Axis. "
+        "Dynamic จะรักษา Baseline เป็นหลัก แล้วตรวจ candidate grid จาก groove จริงทั้งชุด หาก complete grid ที่ทุกช่องใส่สินค้าได้ต้องใช้ span ใหญ่กว่า Baseline "
+        "ระบบจะผ่อนเฉพาะเท่าที่ complete feasible grid ต้องใช้. Multi-Fit / Stack-Fit ยังคง scale ตาม Max Pcs / Axis. "
         "Strict = Baseline เป็น hard limit; ถ้า groove ที่จำเป็นเกิน Baseline ระบบจะไม่ยอมรับ layout"
     ),
 )
 
 st.sidebar.info(
-    "✅ V0.1.4: ESD Footprint-Only Allowance + Separate Vertical Clearance + Drawing-Corrected Groove Geometry + Topology Validation"
+    "✅ V0.1.4.1: Complete-Grid-Aware Dynamic Span + ESD Footprint-Only + Drawing-Corrected Geometry"
 )
 
 st.sidebar.caption(
@@ -433,11 +433,92 @@ def groove_span_catalog(grooves):
 
 
 def minimum_groove_compatible_span(grooves, required_span):
-    """Smallest real groove-to-groove span that can physically fit the required packed footprint."""
+    """Pairwise groove diagnostic only; not sufficient by itself to prove a complete grid."""
     for span in groove_span_catalog(grooves):
         if span + 1e-9 >= required_span:
             return span
     return None
+
+
+def _candidate_axis_spans(dividers):
+    return [dividers[i + 1] - dividers[i] for i in range(len(dividers) - 1)]
+
+
+def find_complete_grid_span_requirement(
+    subsets_x,
+    subsets_y,
+    target_l,
+    target_w,
+    base_eff_x,
+    base_eff_y,
+):
+    """
+    Find the smallest PRACTICALLY FEASIBLE complete A10 grid relaxation.
+
+    Why this exists:
+    A pairwise groove span may fit one product but still leave a residual cell
+    that is too small.  Example: a 380-mm product may have a 420-mm groove pair,
+    but retaining the mandatory first/last sheets can create 420 + 140 mm cells;
+    the 140-mm residual cell invalidates the complete grid.  The real feasible
+    structure may therefore require one 560-mm cell.
+
+    Candidate requirements:
+      1) topology must be a valid interlocked grid,
+      2) EVERY X interval must fit target_l,
+      3) EVERY Y interval must fit target_w.
+
+    Ranking minimizes the amount of relaxation from the current base guardrail,
+    then prefers the smaller absolute maximum spans, then the simpler grid.
+    """
+    best = None
+
+    for x_dividers in subsets_x:
+        x_spans = _candidate_axis_spans(x_dividers)
+        if not x_spans or any(span + 1e-9 < target_l for span in x_spans):
+            continue
+        max_x = max(x_spans)
+
+        for y_dividers in subsets_y:
+            topo_ok, _ = topology_validation(x_dividers, y_dividers)
+            if not topo_ok:
+                continue
+
+            y_spans = _candidate_axis_spans(y_dividers)
+            if not y_spans or any(span + 1e-9 < target_w for span in y_spans):
+                continue
+            max_y = max(y_spans)
+
+            req_x = max(base_eff_x, max_x)
+            req_y = max(base_eff_y, max_y)
+
+            # Relative relaxation is the primary criterion so one axis cannot
+            # become excessively loose merely to improve the other axis.
+            relax_x = req_x / base_eff_x if base_eff_x > 0 else float("inf")
+            relax_y = req_y / base_eff_y if base_eff_y > 0 else float("inf")
+            worst_relax = max(relax_x, relax_y)
+            total_extra = max(0.0, req_x - base_eff_x) + max(0.0, req_y - base_eff_y)
+
+            score = (
+                worst_relax,
+                total_extra,
+                max_x + max_y,
+                len(x_dividers) + len(y_dividers),
+            )
+
+            candidate = {
+                "required_eff_x": req_x,
+                "required_eff_y": req_y,
+                "complete_max_span_x": max_x,
+                "complete_max_span_y": max_y,
+                "x_dividers": list(x_dividers),
+                "y_dividers": list(y_dividers),
+                "score": score,
+            }
+
+            if best is None or score < best["score"]:
+                best = candidate
+
+    return best
 
 
 def effective_span_limits(
@@ -449,22 +530,23 @@ def effective_span_limits(
     guardrail_mode,
     groove_x,
     groove_y,
+    subsets_x,
+    subsets_y,
 ):
     """
-    Return effective X/Y maximum span limits plus minimum groove-compatible spans.
+    Return effective X/Y maximum span limits plus diagnostics.
 
-    X spans are evaluated against product flat-L and Y spans against flat-W.
+    V0.1.4.1 Dynamic mode is COMPLETE-GRID aware:
+      - start from the normal engineering baseline / Multi-Fit scaling,
+      - enumerate real groove-subset grids,
+      - require every cell to fit at least one packed product footprint,
+      - require the whole X/Y topology to be a valid interlocked grid,
+      - relax only as far as the best complete feasible grid needs.
 
-    Dynamic mode preserves the previous Multi-Fit scaling behavior, but it will
-    never reject a product merely because the A10 groove pitch forces the
-    smallest feasible slot to be slightly/largely above the baseline. It relaxes
-    only as far as the minimum REAL groove-compatible span required by one
-    packed product footprint.
-
-    Strict mode treats the user baseline as a true hard maximum span.
+    Strict mode remains a true hard maximum and never auto-relaxes.
     """
-    min_groove_x = minimum_groove_compatible_span(groove_x, target_l)
-    min_groove_y = minimum_groove_compatible_span(groove_y, target_w)
+    pairwise_min_x = minimum_groove_compatible_span(groove_x, target_l)
+    pairwise_min_y = minimum_groove_compatible_span(groove_y, target_w)
 
     if "Standard 1 PC/Slot" in mode:
         pcs_factor = 1.0
@@ -472,24 +554,39 @@ def effective_span_limits(
         pcs_factor = float(max_pcs_per_axis)
 
     if guardrail_mode.startswith("Dynamic"):
-        # Keep V0.1.1 Multi-Fit / Stack-Fit scaling, then add groove awareness.
-        eff_x = max(baseline, target_l * pcs_factor)
-        eff_y = max(baseline, target_w * pcs_factor)
-
-        # V0.1.2+ fix: discrete A10 groove geometry may make the
-        # minimum feasible slot larger than the numerical baseline/footprint.
-        if min_groove_x is not None:
-            eff_x = max(eff_x, min_groove_x)
-        if min_groove_y is not None:
-            eff_y = max(eff_y, min_groove_y)
+        base_eff_x = max(baseline, target_l * pcs_factor)
+        base_eff_y = max(baseline, target_w * pcs_factor)
     else:
-        # Strict = real hard limit. Product fit and groove geometry are not
-        # allowed to silently expand the user's engineering limit.
-        eff_x = baseline
-        eff_y = baseline
+        base_eff_x = baseline
+        base_eff_y = baseline
 
-    return eff_x, eff_y, min_groove_x, min_groove_y
+    complete_req = find_complete_grid_span_requirement(
+        subsets_x,
+        subsets_y,
+        target_l,
+        target_w,
+        base_eff_x,
+        base_eff_y,
+    )
 
+    if guardrail_mode.startswith("Dynamic") and complete_req is not None:
+        eff_x = complete_req["required_eff_x"]
+        eff_y = complete_req["required_eff_y"]
+    else:
+        # Strict stays hard. If no complete feasible grid exists, keep the
+        # baseline so the normal solver naturally returns no valid layout.
+        eff_x = base_eff_x
+        eff_y = base_eff_y
+
+    return (
+        eff_x,
+        eff_y,
+        pairwise_min_x,
+        pairwise_min_y,
+        complete_req,
+        base_eff_x,
+        base_eff_y,
+    )
 
 def span_stats(bounds):
     spans = [bounds[i + 1] - bounds[i] for i in range(len(bounds) - 1)]
@@ -547,7 +644,18 @@ def solve_a10_partition_layouts(
         target_l = el + esd_total_allowance
         target_h = eh + vertical_clr
 
-        eff_span_x, eff_span_y, min_groove_span_x, min_groove_span_y = effective_span_limits(
+        subsets_x = generate_partition_subsets(groove_x)
+        subsets_y = generate_partition_subsets(groove_y)
+
+        (
+            eff_span_x,
+            eff_span_y,
+            min_groove_span_x,
+            min_groove_span_y,
+            complete_grid_req,
+            base_eff_span_x,
+            base_eff_span_y,
+        ) = effective_span_limits(
             target_l,
             target_w,
             mode,
@@ -556,6 +664,15 @@ def solve_a10_partition_layouts(
             guardrail_mode,
             groove_x,
             groove_y,
+            subsets_x,
+            subsets_y,
+        )
+
+        min_complete_grid_span_x = (
+            complete_grid_req["complete_max_span_x"] if complete_grid_req is not None else None
+        )
+        min_complete_grid_span_y = (
+            complete_grid_req["complete_max_span_y"] if complete_grid_req is not None else None
         )
 
         span_requirements.append(
@@ -568,13 +685,14 @@ def solve_a10_partition_layouts(
                 "target_w": target_w,
                 "min_groove_span_x": min_groove_span_x,
                 "min_groove_span_y": min_groove_span_y,
+                "min_complete_grid_span_x": min_complete_grid_span_x,
+                "min_complete_grid_span_y": min_complete_grid_span_y,
+                "base_eff_span_x": base_eff_span_x,
+                "base_eff_span_y": base_eff_span_y,
                 "eff_span_x": eff_span_x,
                 "eff_span_y": eff_span_y,
             }
         )
-
-        subsets_x = generate_partition_subsets(groove_x)
-        subsets_y = generate_partition_subsets(groove_y)
 
         for x_dividers in subsets_x:
             for y_dividers in subsets_y:
@@ -710,6 +828,10 @@ def solve_a10_partition_layouts(
                     "eff_span_y": eff_span_y,
                     "min_groove_span_x": min_groove_span_x,
                     "min_groove_span_y": min_groove_span_y,
+                    "min_complete_grid_span_x": min_complete_grid_span_x,
+                    "min_complete_grid_span_y": min_complete_grid_span_y,
+                    "base_eff_span_x": base_eff_span_x,
+                    "base_eff_span_y": base_eff_span_y,
                     "max_span_x": max_x_span,
                     "max_span_y": max_y_span,
                     "span_ratio": span_ratio,
@@ -1152,9 +1274,11 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
         f"Effective orientation envelope: {fmt_num(opt['target_w'])} × {fmt_num(opt['target_l'])} footprint × {fmt_num(opt['target_h'])} mm vertical • "
         f"Grid: {len(opt['x_dividers'])-1} × {len(opt['y_dividers'])-1} cells • "
         f"Max span X/Y: {fmt_num(opt['max_span_x'])} / {fmt_num(opt['max_span_y'])} mm • "
+        f"Base guardrail X/Y: {fmt_num(opt['base_eff_span_x'])} / {fmt_num(opt['base_eff_span_y'])} mm • "
         f"Effective guardrail X/Y: {fmt_num(opt['eff_span_x'])} / {fmt_num(opt['eff_span_y'])} mm • "
-        f"Min groove-compatible X/Y: {fmt_num(opt['min_groove_span_x']) if opt['min_groove_span_x'] is not None else 'N/A'} / "
-        f"{fmt_num(opt['min_groove_span_y']) if opt['min_groove_span_y'] is not None else 'N/A'} mm"
+        f"Min complete-grid requirement X/Y: "
+        f"{fmt_num(opt['min_complete_grid_span_x']) if opt['min_complete_grid_span_x'] is not None else 'N/A'} / "
+        f"{fmt_num(opt['min_complete_grid_span_y']) if opt['min_complete_grid_span_y'] is not None else 'N/A'} mm"
     )
 
     top_tab, side_tab, bom_tab = st.tabs(
@@ -1221,7 +1345,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — ESD Footprint-Only Logic + Separate Vertical Clearance + Drawing-Corrected Geometry + Groove-Aware Span Guardrail"
+    f"{APP_VERSION} • {MODULE_NAME} — Complete-Grid-Aware Dynamic Span + ESD Footprint-Only + Drawing-Corrected Geometry"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -1249,7 +1373,7 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.4 uses drawing-audited groove centerlines and PURE Product Dimension. ESD allowance is applied only to the two floor axes of each orientation; "
+    "V0.1.4.1 uses drawing-audited groove centerlines, PURE Product Dimension, and complete-grid-aware Dynamic Span. ESD allowance is applied only to the two floor axes of each orientation; "
     "the Up-axis uses pure dimension + separate Vertical / Top Clearance. The legacy Excel table remains reference-only during validation."
 )
 
@@ -1262,16 +1386,33 @@ if not options:
     st.error(
         "❌ ไม่พบ layout ที่ผ่าน Product Fit + Partition Topology + Structural Span Guardrail กรุณาตรวจสอบ Product Dimension, ESD Footprint Allowance, Vertical Clearance หรือ Span Guardrail"
     )
+
+    allowed_reqs = [r for r in debug.get("span_requirements", []) if r.get("allowed")]
+    diag = next((r for r in allowed_reqs if r.get("up_axis") == "H"), allowed_reqs[0] if allowed_reqs else None)
+    if diag is not None:
+        req_x = diag.get("min_complete_grid_span_x")
+        req_y = diag.get("min_complete_grid_span_y")
+        if req_x is None or req_y is None:
+            st.warning(
+                f"Complete-grid diagnostic — {diag['up_axis']}-Up has no groove-subset grid where every cell fits the packed footprint and the topology remains valid."
+            )
+        elif span_mode.startswith("Dynamic"):
+            st.info(
+                f"Dynamic diagnostic — minimum complete-grid max span for {diag['up_axis']}-Up is "
+                f"X/Y = {fmt_num(req_x)} / {fmt_num(req_y)} mm; effective Dynamic guardrail = "
+                f"{fmt_num(diag['eff_span_x'])} / {fmt_num(diag['eff_span_y'])} mm."
+            )
+
     if span_mode == "Strict":
         allowed_reqs = [r for r in debug.get("span_requirements", []) if r.get("allowed")]
         if allowed_reqs:
             # Prefer H-Up diagnostic because it is the normal engineering reference.
             diag = next((r for r in allowed_reqs if r.get("up_axis") == "H"), allowed_reqs[0])
-            req_x = diag.get("min_groove_span_x")
-            req_y = diag.get("min_groove_span_y")
+            req_x = diag.get("min_complete_grid_span_x")
+            req_y = diag.get("min_complete_grid_span_y")
             if req_x is not None and req_y is not None:
                 st.info(
-                    f"Strict diagnostic — minimum groove-compatible span for {diag['up_axis']}-Up is "
+                    f"Strict diagnostic — minimum complete-grid max span for {diag['up_axis']}-Up is "
                     f"X/Y = {fmt_num(req_x)} / {fmt_num(req_y)} mm, while Strict baseline = {fmt_num(max_slot_span)} mm."
                 )
 else:
