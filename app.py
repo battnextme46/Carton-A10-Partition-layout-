@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.5.4.1"
+APP_VERSION = "V0.1.5.4.2"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -34,6 +34,29 @@ CARTON_CY = CARTON_W / 2.0
 PAD_L = 574.0
 PAD_W = 394.0
 PAD_T = 3.0
+
+# V0.1.5.4.2 — Auto-Fold must never solve from a mathematically zero-size
+# lateral bag.  The real bag still has physical material even after folding.
+#
+# This is deliberately a SMALL topology seed, NOT a claim that the bubble bag
+# is physically only 0.5 mm/side.  It prevents an exact product-to-groove pitch
+# equality (e.g. 140-mm product in a 140-mm cell) from being treated as having
+# room for a bag.  The selected layout then back-calculates the real allowable
+# effective bag envelope (e.g. Matterhorn 2.5 mm/side).
+AUTO_FOLD_MIN_BASE_SEED_PER_SIDE = 0.5
+
+# ROADMAP / DESIGN DECISION:
+# Default solver uses STANDARD EXISTING A10 PARTITIONS ONLY.
+# Project-specific new die-cuts (example: PARTITION_QUO924) must NOT be inserted
+# into the normal master library / auto recommendation.
+# Future optional mode:
+#   "Custom Partition Optimization — Approval Required"
+# should be enabled only after standard-partition capacity is judged insufficient
+# and budget / tooling approval exists for a new die-cut.
+CUSTOM_PARTITION_MODE_ROADMAP = (
+    "Future optional mode only — approval/budget required; "
+    "not part of Standard Existing Partition recommendation."
+)
 
 # Drawing-audited A10 partition groove CENTERLINES in CARTON coordinates.
 #
@@ -90,10 +113,11 @@ def _geometry_signature():
 GEOMETRY_SIGNATURE = _geometry_signature()
 
 # Solver/cache logic revision guard.
-# V0.1.5.3 adds a physical ESD / air-bubble vertical build-up model.
-# Folding may reduce projected W/L footprint, but it does not delete bag volume:
-# base bag layers remain above/below the product and a folded flap adds local Up-axis build-up.
-SOLVER_LOGIC_SIGNATURE = "V01541_FOLD_FEASIBILITY_GATE_R1"
+# V0.1.5.4.2 keeps orientation-aware fold routing, but Auto Fold no longer starts
+# from a mathematically zero lateral bag. A small non-zero physical seed is used
+# during candidate/grid generation; actual allowable effective bag growth is still
+# back-calculated from the selected layout.
+SOLVER_LOGIC_SIGNATURE = "V01542_NONZERO_BASE_BAG_SEED_STANDARD_FIDELITY_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 #
@@ -337,23 +361,38 @@ if bag_folding_method == "Standard Bag — No Fold":
 
 elif bag_folding_method == "Mouth Fold Only":
     esd_fit_model = "Folded / Compressible — Auto Feasibility (RFQ)"
-    solver_esd_allowance_per_side = 0.0
+    # Real bag material never becomes a zero-width mathematical envelope.
+    # Use only a small topology seed; the selected grid later back-calculates
+    # the maximum effective folded-bag allowance it can physically tolerate.
+    solver_esd_allowance_per_side = min(
+        float(esd_allowance_per_side),
+        AUTO_FOLD_MIN_BASE_SEED_PER_SIDE,
+    )
     mouth_fold_layer_build_up = bubble_build_up_per_layer
 
     st.sidebar.warning(
         "⚠️ Mouth Fold Auto Feasibility: solver routes the mouth-fold layer "
-        "to Up-axis or the thin floor axis according to product posture/orientation."
+        "to Up-axis or the thin floor axis according to product posture/orientation. "
+        f"A non-zero base-bag seed of {fmt_num(solver_esd_allowance_per_side)} mm/side "
+        "is used only to prevent impossible zero-bag groove fits."
     )
 
 elif bag_folding_method == "Mouth + Side Fold — AMW Standard":
     esd_fit_model = "Folded / Compressible — Auto Feasibility (RFQ)"
-    solver_esd_allowance_per_side = 0.0
+    # Same non-zero physical seed as Mouth Fold Only. This is a topology guard,
+    # not an asserted compressed bubble thickness.
+    solver_esd_allowance_per_side = min(
+        float(esd_allowance_per_side),
+        AUTO_FOLD_MIN_BASE_SEED_PER_SIDE,
+    )
     mouth_fold_layer_build_up = bubble_build_up_per_layer
     side_fold_local_layer_build_up = bubble_build_up_per_layer
 
     st.sidebar.warning(
         "⚠️ AMW Mouth + Side Fold: Auto detects Flat-laid vs Edge-standing. "
-        "Fold material is accumulated on the physical fold face instead of being forced into Up-axis."
+        "Fold material is accumulated on the physical fold face instead of being forced into Up-axis. "
+        f"Candidate generation keeps a non-zero base-bag seed "
+        f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
     )
 
 else:
@@ -432,8 +471,9 @@ effective_product_l = p_l + total_esd_allowance
 
 if "Auto Feasibility" in esd_fit_model:
     st.sidebar.caption(
-        "Product Dimension = PURE product size. Auto Fold uses pure lateral footprint "
-        "to generate candidates, then back-calculates allowable base-bag growth. "
+        "Product Dimension = PURE product size. Auto Fold keeps a small NON-ZERO "
+        f"base-bag topology seed ({fmt_num(solver_esd_allowance_per_side)} mm/side), "
+        "then back-calculates the actual allowable effective bag growth from the selected grid. "
         "Mouth/side fold build-up is routed by orientation."
     )
 else:
@@ -522,7 +562,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.5.4.1: Fold Feasibility Gate + Risk-Aware Ranking + Trial-Only Aggressive Options"
+    "✅ V0.1.5.4.2: Non-Zero Base-Bag Seed + Standard-Variant Fidelity + Fold Feasibility Gate"
 )
 
 st.sidebar.caption(
@@ -1594,6 +1634,11 @@ def solve_a10_partition_layouts(
                         "esd_fit_model": esd_model,
                         "nominal_esd_per_side": nominal_esd_per_side,
                         "effective_esd_per_side": effective_esd_per_side,
+                        "auto_fold_base_seed_per_side": (
+                            effective_esd_per_side
+                            if "Auto Feasibility" in esd_model
+                            else 0.0
+                        ),
                         "slot_limit_basis": slot_limit_basis,
                         "max_total_pcs_per_slot": max_total_pcs_per_slot,
                         "max_pcs_per_axis": max_pcs_per_axis,
@@ -1601,6 +1646,7 @@ def solve_a10_partition_layouts(
                         "partition_variant_id": system["variant_id"],
                         "partition_variant_label": system["variant_label"],
                         "variant_priority": system["variant_priority"],
+                        "standard_existing_variant": system["variant_id"] in {"111_STD", "225_STD"},
                         "short_partition_name": system["short_partition_name"],
                         "long_partition_name": system["long_partition_name"],
                         "layers": layers,
@@ -1677,7 +1723,9 @@ def classify_recommendation_feasibility(opt, tol=0.01):
         still be a known/validated real-world standard and is not automatically blocked.
 
     Auto Folded / Compressible RFQ concepts:
-      - Base bag limit must be > 0 in every limiting floor direction.
+      - Candidate generation already includes a small NON-ZERO physical bag seed.
+      - The selected layout must retain allowance ABOVE that seed in the limiting
+        direction; a layout that only just meets the seed is treated as TRIAL_ONLY.
       - Local side-fold peak must not cross the selected slot/partition envelope.
       - Local peak must not require theoretical carton-height compression/staggering.
 
@@ -1690,14 +1738,18 @@ def classify_recommendation_feasibility(opt, tol=0.01):
 
     if is_auto_fold:
         base_limit = float(opt.get("max_esd_per_side_current_layout", 0.0))
+        seed = float(opt.get("auto_fold_base_seed_per_side", 0.0))
         local_floor_overflow = float(opt.get("local_floor_overflow", 0.0))
         local_height_compression = float(
             opt.get("local_peak_compression_required", 0.0)
         )
 
-        if base_limit <= tol:
+        # The seed itself exists only to stop exact zero-bag mathematical fits.
+        # Recommendation requires some real headroom beyond that seed.
+        if base_limit <= seed + tol:
             reasons.append(
-                "Base bag lateral reserve is zero / near-zero in the limiting direction"
+                f"Base bag limit {fmt_num(base_limit)} mm/side has no reserve beyond "
+                f"the Auto-Fold physical seed {fmt_num(seed)} mm/side"
             )
 
         if local_floor_overflow > tol:
@@ -1734,6 +1786,7 @@ def option_rank(opt):
         1 if opt.get("recommendation_eligible", True) else 0,
         opt["qty_box"],
         opt["orientation_priority"],
+        1 if opt.get("standard_existing_variant", False) else 0,
         opt.get("variant_priority", 0),
         -opt["vert_h"],
         opt["qty_layer"],
@@ -1753,6 +1806,7 @@ def raw_capacity_rank(opt):
     return (
         opt["qty_box"],
         opt["orientation_priority"],
+        1 if opt.get("standard_existing_variant", False) else 0,
         opt.get("variant_priority", 0),
         -opt.get("local_floor_overflow", 0.0),
         -opt.get("local_peak_compression_required", 0.0),
@@ -2346,6 +2400,19 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
         f"Direction mode: **{opt.get('fold_direction_mode','-')}**"
     )
 
+    if "Auto Feasibility" in opt.get("esd_fit_model", ""):
+        st.caption(
+            f"Auto-Fold grid seed = **{fmt_num(opt.get('auto_fold_base_seed_per_side', 0.0))} mm/side** "
+            "(non-zero topology guard only; not a claimed bubble thickness). "
+            "The displayed Base Bag Limit is back-calculated from the selected real groove grid."
+        )
+
+    if opt.get("standard_existing_variant", False):
+        st.caption(
+            "✅ Standard Existing Partition variant — preferred over a fine-pitch / special variant "
+            "when recommendation capacity and orientation are otherwise tied."
+        )
+
     if opt.get("local_floor_overflow", 0.0) > 0:
         st.warning(
             "⚠️ **Local fold peak reaches beyond the nominal slot envelope** — "
@@ -2391,7 +2458,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     )
 
     # --------------------------------------------------------
-    # V0.1.5.4.1 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
+    # V0.1.5.4.2 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
     # --------------------------------------------------------
     is_auto_folded = "Auto Feasibility" in opt.get("esd_fit_model", "")
     is_verified_folded = "Verified by Trial" in opt.get("esd_fit_model", "")
@@ -2438,8 +2505,9 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
             )
 
         st.caption(
-            "Auto Feasibility does NOT claim that the ESD bag material is this thin. "
-            "It back-calculates the maximum effective lateral footprint growth that the selected grid can tolerate."
+            "Auto Feasibility does NOT claim that the ESD bag material equals the solver seed. "
+            "The seed only prevents a zero-bag mathematical fit; the Base Bag Limit shown above "
+            "is back-calculated from the selected groove grid and is the value to validate by packing trial."
         )
 
     else:
@@ -2617,7 +2685,7 @@ debug["trial_only"] = len(trial_only_options)
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Fold Feasibility Gate + Risk-Aware Ranking + Orientation-Aware Fold"
+    f"{APP_VERSION} • {MODULE_NAME} — Non-Zero Folded-Bag Seed + Standard-Variant Fidelity + Risk-Aware Ranking"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -2649,8 +2717,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.5.4.1 adds a physical recommendation gate on top of the orientation-aware fold model. "
-    "Aggressive Auto-Fold concepts remain visible for trials, but zero base-bag reserve / fold interference can no longer win Best & Recommended by capacity alone."
+    "V0.1.5.4.2 fixes exact-pitch folded-bag behavior by keeping a small non-zero base-bag seed during grid generation. "
+    "It also strengthens Standard Existing Partition preference on equal capacity, while preserving Trial-Only aggressive concepts and the orientation-aware fold model."
 )
 
 st.divider()
@@ -2829,6 +2897,8 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Partition": f"{int(opt['part_height'])} mm",
                     "Long Partition Variant": opt.get("long_partition_name", ""),
                     "Folding Method": opt.get("bag_folding_method", ""),
+                    "Auto Base Seed/Side": round(opt.get("auto_fold_base_seed_per_side", 0.0), 2),
+                    "Std Existing Variant": "Yes" if opt.get("standard_existing_variant", False) else "No",
                     "Packing Posture": opt.get("packing_posture", ""),
                     "Fold Accumulation": opt.get("fold_accumulation_label", ""),
                     "Local Floor Overflow": round(opt.get("local_floor_overflow", 0.0), 2),
@@ -2891,8 +2961,12 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Base bag is not deleted by folding:** top/bottom bag enclosure remains in Up-axis. Auto Fold only back-calculates the effective BASE lateral bag growth allowed by the selected slot; mouth/side fold layers are then added on the resolved fold axis.
 - **Mouth Fold:** treated as nominal build-up on the resolved accumulation axis. **Side Fold:** treated as a localized peak on the same axis.
 - **Top / Side consistency:** Smart Top Pattern and Side Section project the same directional nominal envelope (blue) and local fold peak (purple). Side Section automatically switches to X-Up or Y-Up when needed so a floor-axis fold build-up is visible.
-- **Fold Feasibility Gate (V0.1.5.4.1):** Auto-Fold candidates with **zero/near-zero base-bag reserve**, **local fold peak crossing the slot**, or **local peak requiring theoretical carton-height compression/staggering** are classified as **TRIAL ONLY**.
+- **Non-Zero Auto-Fold Base Bag Seed (V0.1.5.4.2):** folded air-bubble material never disappears completely. Auto Fold therefore starts grid generation with a small **{fmt_num(min(esd_allowance_per_side, AUTO_FOLD_MIN_BASE_SEED_PER_SIDE))} mm/side** topology seed instead of 0 mm/side. This is NOT a physical thickness claim; it prevents exact product=pitch conditions from being accepted as if a bag had zero volume.
+- **Back-Calculated Effective Limit:** after the real groove grid is selected, the tool still calculates the maximum effective folded-bag allowance that the layout can tolerate. Example: a 65-mm product in a 70-mm cell may still report **2.5 mm/side** even though candidate generation used only the small non-zero seed.
+- **Fold Feasibility Gate:** an Auto-Fold layout that has no margin beyond the seed, a local fold peak crossing the slot, or local peak requiring theoretical carton-height compression/staggering is **TRIAL ONLY**.
+- **Standard Existing Partition Fidelity:** on equal recommendation capacity/orientation, existing Standard partition variants are preferred over fine-pitch/special variants. This prevents a special die-cut from replacing a standard BOM when it creates no real capacity benefit.
 - **Risk-Aware Ranking:** TRIAL-ONLY geometry remains visible in Scenario Explorer / aggressive-option review, but it can **never outrank a Recommendation-Eligible layout merely because its capacity is higher**.
+- **Custom Partition Roadmap:** project-specific new die-cuts are intentionally excluded from the default solver. A future `Custom Partition Optimization — Approval Required` mode is reserved for cases where standard-partition capacity is rejected and tooling/budget approval exists.
 - **Local fold peak overflow:** localized/compressible fold interference remains useful as an optimization clue, but in Auto-Fold RFQ mode it is not accepted as a Best & Recommended condition without physical proof.
 - **Custom / Verified Packing:** measured envelope values remain available when actual packing samples exist and are not subjected to the Auto-Fold zero-base-reserve gate in the same way.
 - **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
