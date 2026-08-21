@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.5.4"
+APP_VERSION = "V0.1.5.4.1"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -93,7 +93,7 @@ GEOMETRY_SIGNATURE = _geometry_signature()
 # V0.1.5.3 adds a physical ESD / air-bubble vertical build-up model.
 # Folding may reduce projected W/L footprint, but it does not delete bag volume:
 # base bag layers remain above/below the product and a folded flap adds local Up-axis build-up.
-SOLVER_LOGIC_SIGNATURE = "V0154_ORIENTATION_AWARE_FOLD_VECTOR_R1"
+SOLVER_LOGIC_SIGNATURE = "V01541_FOLD_FEASIBILITY_GATE_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 #
@@ -522,7 +522,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.5.4: Orientation-Aware Fold Vector + Flat/Edge Posture Detection + Unified Bag Envelope"
+    "✅ V0.1.5.4.1: Fold Feasibility Gate + Risk-Aware Ranking + Trial-Only Aggressive Options"
 )
 
 st.sidebar.caption(
@@ -1649,6 +1649,9 @@ def solve_a10_partition_layouts(
                         "fit_margin_note": fit_margin["fit_margin_note"],
                         "limiting_floor_direction": fit_margin["limiting_floor_direction"],
                     }
+
+                    feasibility = classify_recommendation_feasibility(option)
+                    option.update(feasibility)
                     options.append(option)
 
     debug = {
@@ -1663,19 +1666,94 @@ def solve_a10_partition_layouts(
 
 
 # ============================================================
+# V0.1.5.4.1 — FOLD FEASIBILITY GATE
+# ============================================================
+def classify_recommendation_feasibility(opt, tol=0.01):
+    """
+    Separate geometrically possible concepts from recommendation-eligible layouts.
+
+    Standard / Verified packing:
+      - keep the existing fit-margin warning philosophy; a zero nominal reserve may
+        still be a known/validated real-world standard and is not automatically blocked.
+
+    Auto Folded / Compressible RFQ concepts:
+      - Base bag limit must be > 0 in every limiting floor direction.
+      - Local side-fold peak must not cross the selected slot/partition envelope.
+      - Local peak must not require theoretical carton-height compression/staggering.
+
+    A failed Auto-Fold gate is NOT deleted. It remains visible as TRIAL_ONLY so an
+    engineer can see higher-capacity aggressive concepts without the app calling them
+    "Best & Recommended".
+    """
+    reasons = []
+    is_auto_fold = "Auto Feasibility" in opt.get("esd_fit_model", "")
+
+    if is_auto_fold:
+        base_limit = float(opt.get("max_esd_per_side_current_layout", 0.0))
+        local_floor_overflow = float(opt.get("local_floor_overflow", 0.0))
+        local_height_compression = float(
+            opt.get("local_peak_compression_required", 0.0)
+        )
+
+        if base_limit <= tol:
+            reasons.append(
+                "Base bag lateral reserve is zero / near-zero in the limiting direction"
+            )
+
+        if local_floor_overflow > tol:
+            reasons.append(
+                f"Local fold peak crosses the slot envelope by {fmt_num(local_floor_overflow)} mm"
+            )
+
+        if local_height_compression > tol:
+            reasons.append(
+                f"Local fold peak requires {fmt_num(local_height_compression)} mm theoretical height compression/staggering"
+            )
+
+    eligible = len(reasons) == 0
+
+    return {
+        "recommendation_eligible": eligible,
+        "feasibility_class": "RECOMMENDED" if eligible else "TRIAL_ONLY",
+        "feasibility_reasons": reasons,
+        "feasibility_reason_text": " • ".join(reasons) if reasons else "Pass",
+    }
+
+
+# ============================================================
 # OPTION RANKING / DEDUPLICATION
 # ============================================================
 def option_rank(opt):
     """
-    Capacity first, then prefer normal orientation on a tie, then structure,
-    then lower BOM complexity.
+    Risk-aware recommendation ranking.
+
+    Recommendation-eligible layouts ALWAYS outrank TRIAL_ONLY layouts.
+    Within the same feasibility class, capacity remains the primary objective.
     """
     return (
+        1 if opt.get("recommendation_eligible", True) else 0,
         opt["qty_box"],
         opt["orientation_priority"],
         opt.get("variant_priority", 0),
         -opt["vert_h"],
         opt["qty_layer"],
+        -opt.get("local_floor_overflow", 0.0),
+        -opt.get("local_peak_compression_required", 0.0),
+        -opt.get("package_protrusion", 0.0),
+        -opt["span_ratio"],
+        -opt["slot_variation"],
+        -opt["total_dividers_per_layer"],
+        opt["area_occupancy"],
+        -opt["center_offset"],
+    )
+
+
+def raw_capacity_rank(opt):
+    """Capacity-first rank used only to surface aggressive / TRIAL_ONLY concepts."""
+    return (
+        opt["qty_box"],
+        opt["orientation_priority"],
+        opt.get("variant_priority", 0),
         -opt.get("local_floor_overflow", 0.0),
         -opt.get("local_peak_compression_required", 0.0),
         -opt.get("package_protrusion", 0.0),
@@ -2202,10 +2280,18 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     st.subheader(f"{icon} {title}")
 
     up_tone = "good" if opt["up_axis"] == "H" else "warn"
+    feasibility_ok = opt.get("recommendation_eligible", True)
+    feasibility_badge = (
+        badge("Recommendation Eligible", "good")
+        if feasibility_ok
+        else badge("TRIAL ONLY — Not Recommended", "warn")
+    )
+
     status_badges = (
         badge(f"{opt['up_axis']}-Up", up_tone)
         + badge(f"Partition {int(opt['part_height'])} mm", "info")
         + badge(opt.get("long_partition_name", "Long partition"), "info")
+        + feasibility_badge
         + badge(opt["topology_note"], "good")
     )
     if opt["up_axis"] != "H":
@@ -2219,6 +2305,15 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
 
     if comparison_text:
         st.caption(comparison_text)
+
+    if not opt.get("recommendation_eligible", True):
+        reasons = opt.get("feasibility_reasons", [])
+        st.error(
+            "🧪 **Aggressive / Trial-Only Geometry — blocked from Best & Recommended.** "
+            "The geometry is retained for engineering exploration, but at least one physical fold-feasibility gate failed."
+        )
+        for reason in reasons:
+            st.caption(f"• {reason}")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Products / Layer", f"{opt['qty_layer']} pcs")
@@ -2256,8 +2351,8 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
             "⚠️ **Local fold peak reaches beyond the nominal slot envelope** — "
             f"local floor peak exceeds the current slot by up to "
             f"**{fmt_num(opt['local_floor_overflow'])} mm**. "
-            "Because this is localized/compressible fold material, the layout is not auto-rejected, "
-            "but this is exactly the condition that should trigger a packing trial or groove/layout review."
+            "The geometry remains visible for exploration, but Auto-Fold layouts with this condition "
+            "are classified as **TRIAL ONLY** and are blocked from Best & Recommended."
         )
 
     if opt["package_protrusion"] > 0:
@@ -2296,7 +2391,7 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     )
 
     # --------------------------------------------------------
-    # V0.1.5.4 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
+    # V0.1.5.4.1 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
     # --------------------------------------------------------
     is_auto_folded = "Auto Feasibility" in opt.get("esd_fit_model", "")
     is_verified_folded = "Verified by Trial" in opt.get("esd_fit_model", "")
@@ -2483,20 +2578,46 @@ debug["geometry_sync_rejected"] = len(geometry_sync_rejected)
 debug["geometry_signature"] = GEOMETRY_SIGNATURE
 
 options = dedupe_options(options)
-allowed_options = [o for o in options if o["allowed"]]
-locked_options = [o for o in options if not o["allowed"]]
-h_options = [o for o in options if o["up_axis"] == "H"]
+
+# Recommendation pool and aggressive / trial-only pool are intentionally separated.
+recommendation_options = [
+    o for o in options if o.get("recommendation_eligible", True)
+]
+trial_only_options = [
+    o for o in options if not o.get("recommendation_eligible", True)
+]
+
+allowed_options = [o for o in recommendation_options if o["allowed"]]
+locked_options = [o for o in recommendation_options if not o["allowed"]]
+h_options = [o for o in recommendation_options if o["up_axis"] == "H"]
+
+trial_allowed_options = [o for o in trial_only_options if o["allowed"]]
+trial_locked_options = [o for o in trial_only_options if not o["allowed"]]
 
 best_h = max(h_options, key=option_rank) if h_options else None
 best_allowed = max(allowed_options, key=option_rank) if allowed_options else None
 best_locked = max(locked_options, key=option_rank) if locked_options else None
+
+best_trial_allowed = (
+    max(trial_allowed_options, key=raw_capacity_rank)
+    if trial_allowed_options
+    else None
+)
+best_trial_locked = (
+    max(trial_locked_options, key=raw_capacity_rank)
+    if trial_locked_options
+    else None
+)
+
+debug["recommendation_eligible"] = len(recommendation_options)
+debug["trial_only"] = len(trial_only_options)
 
 # ============================================================
 # HEADER / WORKING CONDITION
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — Orientation-Aware Fold Direction + Unified Bag Envelope + AMW Fold Default"
+    f"{APP_VERSION} • {MODULE_NAME} — Fold Feasibility Gate + Risk-Aware Ranking + Orientation-Aware Fold"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -2528,8 +2649,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.5.4 makes fold physics orientation-aware. Flat-laid parts route fold build-up Up; edge-standing plate/PCBA parts route it toward the thin floor axis. "
-    "Top and Side views now use the same directional bag envelope and show local fold peaks separately."
+    "V0.1.5.4.1 adds a physical recommendation gate on top of the orientation-aware fold model. "
+    "Aggressive Auto-Fold concepts remain visible for trials, but zero base-bag reserve / fold interference can no longer win Best & Recommended by capacity alone."
 )
 
 st.divider()
@@ -2572,10 +2693,31 @@ if not options:
                 )
 else:
     if best_allowed is None:
-        st.error("❌ ไม่พบ layout ใน orientation ที่อนุญาต")
+        if best_trial_allowed is not None:
+            st.error(
+                "❌ **พบ geometry ที่วางได้ แต่ไม่มี layout ที่ผ่าน Fold Feasibility Gate สำหรับการ Recommendation**"
+            )
+            st.warning(
+                f"🧪 Aggressive trial-only potential = **{best_trial_allowed['qty_box']} pcs/A10** "
+                f"({best_trial_allowed['up_axis']}-Up), but it is intentionally blocked from Best & Recommended."
+            )
+            render_result(
+                best_trial_allowed,
+                "Aggressive / Trial-Only Geometry — Not Recommended",
+                "warn",
+            )
+        else:
+            st.error("❌ ไม่พบ layout ใน orientation ที่อนุญาต")
+
         if best_locked:
             st.warning(
-                f"มี Potential {best_locked['up_axis']}-Up layout ที่ {best_locked['qty_box']} pcs/A10 แต่ orientation นี้ยัง Locked อยู่"
+                f"มี Recommendation-eligible Potential {best_locked['up_axis']}-Up layout ที่ "
+                f"{best_locked['qty_box']} pcs/A10 แต่ orientation นี้ยัง Locked อยู่"
+            )
+        elif best_trial_locked:
+            st.warning(
+                f"มี TRIAL-ONLY Potential {best_trial_locked['up_axis']}-Up geometry ที่ "
+                f"{best_trial_locked['qty_box']} pcs/A10 แต่ orientation นี้ยัง Locked อยู่และยังไม่ผ่าน Fold Feasibility Gate"
             )
     else:
         # CASE A: allowed non-normal orientation gives a real capacity benefit vs H-Up.
@@ -2631,6 +2773,39 @@ else:
                     f"Enable {locked_benefit['up_axis']}-Up only after Product / Customer / Label / Handling confirmation."
                 )
 
+        # Keep aggressive higher-capacity geometry visible without allowing it to
+        # override the physically safer recommendation.
+        if (
+            best_trial_allowed is not None
+            and best_allowed is not None
+            and best_trial_allowed["qty_box"] > best_allowed["qty_box"]
+        ):
+            delta_trial = best_trial_allowed["qty_box"] - best_allowed["qty_box"]
+            pct_trial = (
+                delta_trial / best_allowed["qty_box"] * 100.0
+                if best_allowed["qty_box"]
+                else 0.0
+            )
+            st.warning(
+                f"🧪 **Higher geometric capacity exists but is blocked from Recommendation:** "
+                f"{best_trial_allowed['qty_box']} pcs/A10 vs recommended {best_allowed['qty_box']} "
+                f"(+{delta_trial}, +{pct_trial:.1f}%). "
+                "Reason: Auto-Fold physical feasibility gate failed."
+            )
+            with st.expander(
+                f"🧪 Review Trial-Only Higher Capacity — {best_trial_allowed['qty_box']} pcs/A10",
+                expanded=False,
+            ):
+                render_result(
+                    best_trial_allowed,
+                    "Aggressive / Trial-Only Higher Capacity",
+                    "warn",
+                    comparison_text=(
+                        f"Geometric capacity benefit vs recommended: "
+                        f"+{delta_trial} pcs/A10 (+{pct_trial:.1f}%) — NOT recommendation eligible"
+                    ),
+                )
+
 # ============================================================
 # SCENARIO EXPLORER
 # ============================================================
@@ -2644,6 +2819,12 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Rank": idx,
                     "Orientation": f"{opt['up_axis']}-Up",
                     "Status": "Allowed" if opt["allowed"] else "Locked",
+                    "Recommendation": (
+                        "Eligible"
+                        if opt.get("recommendation_eligible", True)
+                        else "TRIAL ONLY"
+                    ),
+                    "Gate Reason": opt.get("feasibility_reason_text", "Pass"),
                     "Floor × Height": opt["orient_label"],
                     "Partition": f"{int(opt['part_height'])} mm",
                     "Long Partition Variant": opt.get("long_partition_name", ""),
@@ -2710,8 +2891,10 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Base bag is not deleted by folding:** top/bottom bag enclosure remains in Up-axis. Auto Fold only back-calculates the effective BASE lateral bag growth allowed by the selected slot; mouth/side fold layers are then added on the resolved fold axis.
 - **Mouth Fold:** treated as nominal build-up on the resolved accumulation axis. **Side Fold:** treated as a localized peak on the same axis.
 - **Top / Side consistency:** Smart Top Pattern and Side Section project the same directional nominal envelope (blue) and local fold peak (purple). Side Section automatically switches to X-Up or Y-Up when needed so a floor-axis fold build-up is visible.
-- **Local fold peak overflow:** a localized/compressible peak is not auto-rejected, but any overlap beyond the slot is explicitly warned and should trigger packing trial / groove review.
-- **Custom / Verified Packing:** measured envelope values remain available when actual packing samples exist.
+- **Fold Feasibility Gate (V0.1.5.4.1):** Auto-Fold candidates with **zero/near-zero base-bag reserve**, **local fold peak crossing the slot**, or **local peak requiring theoretical carton-height compression/staggering** are classified as **TRIAL ONLY**.
+- **Risk-Aware Ranking:** TRIAL-ONLY geometry remains visible in Scenario Explorer / aggressive-option review, but it can **never outrank a Recommendation-Eligible layout merely because its capacity is higher**.
+- **Local fold peak overflow:** localized/compressible fold interference remains useful as an optimization clue, but in Auto-Fold RFQ mode it is not accepted as a Best & Recommended condition without physical proof.
+- **Custom / Verified Packing:** measured envelope values remain available when actual packing samples exist and are not subjected to the Auto-Fold zero-base-reserve gate in the same way.
 - **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
 - **Fit Margin limitation:** this is nominal geometry only; Product tolerance, ESD bag forming variation, partition die-cut tolerance and assembly deformation are not included.
 - **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition protection height is referenced to **Pure Up-axis + Vertical Clearance**; physical carton-height screening separately adds base bag + fold build-up.
