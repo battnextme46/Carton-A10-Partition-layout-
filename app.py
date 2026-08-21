@@ -5,7 +5,7 @@ import streamlit as st
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-APP_VERSION = "V0.1.5.3.1"
+APP_VERSION = "V0.1.5.4"
 APP_NAME = "Carton A10 Partition Layout Optimizer"
 MODULE_NAME = "NPI Packaging Engineering Toolkit • Module 03"
 
@@ -93,7 +93,7 @@ GEOMETRY_SIGNATURE = _geometry_signature()
 # V0.1.5.3 adds a physical ESD / air-bubble vertical build-up model.
 # Folding may reduce projected W/L footprint, but it does not delete bag volume:
 # base bag layers remain above/below the product and a folded flap adds local Up-axis build-up.
-SOLVER_LOGIC_SIGNATURE = "V01531_AMW_FOLD_DEFAULT_R1"
+SOLVER_LOGIC_SIGNATURE = "V0154_ORIENTATION_AWARE_FOLD_VECTOR_R1"
 
 # Outer usable envelope for the partition system / pad zone.
 #
@@ -285,75 +285,79 @@ bubble_build_up_per_layer = st.sidebar.slider(
     value=5.0,
     step=0.5,
     help=(
-        "Engineering packing build-up ของ air-bubble 1 ชั้นในแนว Up-axis. "
+        "Engineering packing build-up ของ air-bubble 1 ชั้น. "
         "Default = 5 mm/layer ตาม allowance ที่ใช้อยู่ปัจจุบัน. "
-        "ไม่ใช่ film/material thickness; เป็น packing build-up สำหรับ concept screening."
+        "V0.1.5.4 จะกระจาย fold build-up ไป W/L/Up ตาม orientation แทนการบังคับขึ้นด้านสูงเสมอ"
     ),
 )
 
+if bag_folding_method in [
+    "Mouth Fold Only",
+    "Mouth + Side Fold — AMW Standard",
+]:
+    fold_direction_mode = st.sidebar.selectbox(
+        "Fold Build-up Direction",
+        options=[
+            "Auto — Orientation-Aware (Recommended)",
+            "Force Up-axis",
+            "Force Thin Floor Axis",
+        ],
+        index=0,
+        help=(
+            "Auto: ถ้า thin axis เป็น Up-axis → ถือว่า Flat-laid และ fold stack ขึ้นด้านสูง. "
+            "ถ้า thin axis อยู่บนพื้น → ถือว่า Edge-standing และ fold stack ไปที่ thin floor axis. "
+            "ใช้ Force เฉพาะเมื่อ engineer รู้วิธีพับจริงต่างจาก Auto"
+        ),
+    )
+else:
+    fold_direction_mode = (
+        "Verified / Measured Envelope"
+        if bag_folding_method == "Custom / Verified Packing"
+        else "No Fold"
+    )
+
 # ------------------------------------------------------------
-# Folding preset model
+# Folding preset model — scalar layer build-up before orientation routing
 # ------------------------------------------------------------
-# Base enclosure always has one bubble layer under + one above the product.
+# Base bag enclosure always contributes one bubble layer below + one above
+# the product in the Up-axis. Mouth/side fold layers are routed later for
+# EACH solver orientation using a fold build-up vector (X/Y/Up).
 base_bag_vertical_build_up = bubble_build_up_per_layer * 2.0
-mouth_fold_vertical_build_up = 0.0
-side_fold_local_build_up = 0.0
+mouth_fold_layer_build_up = 0.0
+side_fold_local_layer_build_up = 0.0
 
 if bag_folding_method == "Standard Bag — No Fold":
     esd_fit_model = "Standard — Rigid Lateral Allowance"
     solver_esd_allowance_per_side = esd_allowance_per_side
 
-    nominal_bag_vertical_build_up = base_bag_vertical_build_up
-    local_bag_vertical_build_up = nominal_bag_vertical_build_up
-
     st.sidebar.info(
         "Standard Bag: lateral footprint uses the full nominal allowance. "
-        "Vertical model = bottom bubble + top bubble."
+        "Vertical model includes the base bottom + top bubble enclosure."
     )
 
 elif bag_folding_method == "Mouth Fold Only":
     esd_fit_model = "Folded / Compressible — Auto Feasibility (RFQ)"
     solver_esd_allowance_per_side = 0.0
-
-    # Mouth flap is folded back over the product, so it adds one extra bubble layer
-    # to the nominal packed height.
-    mouth_fold_vertical_build_up = bubble_build_up_per_layer
-    nominal_bag_vertical_build_up = (
-        base_bag_vertical_build_up + mouth_fold_vertical_build_up
-    )
-    local_bag_vertical_build_up = nominal_bag_vertical_build_up
+    mouth_fold_layer_build_up = bubble_build_up_per_layer
 
     st.sidebar.warning(
-        "⚠️ Mouth Fold Auto Feasibility: ไม่ต้องเดา folded lateral allowance. "
-        "Solver จะใช้ pure footprint หา candidate แล้ว back-calculate ค่า lateral trial target."
+        "⚠️ Mouth Fold Auto Feasibility: solver routes the mouth-fold layer "
+        "to Up-axis or the thin floor axis according to product posture/orientation."
     )
 
 elif bag_folding_method == "Mouth + Side Fold — AMW Standard":
     esd_fit_model = "Folded / Compressible — Auto Feasibility (RFQ)"
     solver_esd_allowance_per_side = 0.0
-
-    # AMW reference process:
-    # 1) mouth flap folds onto the product -> contributes to NOMINAL packed height
-    # 2) side flap folds onto the product -> creates a LOCAL peak, not a full-area layer
-    mouth_fold_vertical_build_up = bubble_build_up_per_layer
-    side_fold_local_build_up = bubble_build_up_per_layer
-
-    nominal_bag_vertical_build_up = (
-        base_bag_vertical_build_up + mouth_fold_vertical_build_up
-    )
-    local_bag_vertical_build_up = (
-        nominal_bag_vertical_build_up + side_fold_local_build_up
-    )
+    mouth_fold_layer_build_up = bubble_build_up_per_layer
+    side_fold_local_layer_build_up = bubble_build_up_per_layer
 
     st.sidebar.warning(
-        "⚠️ AMW Mouth + Side Fold: W/L excess is folded back onto the product. "
-        "Mouth fold is included in nominal packed height; side fold is treated as a local maximum peak "
-        "for compression / load-path screening."
+        "⚠️ AMW Mouth + Side Fold: Auto detects Flat-laid vs Edge-standing. "
+        "Fold material is accumulated on the physical fold face instead of being forced into Up-axis."
     )
 
 else:
-    # Verified mode: use measured packed-envelope data instead of asking the engineer
-    # to guess fold-layer counts.
+    # Verified mode keeps explicit measured packed-envelope information.
     esd_fit_model = "Folded / Compressible — Verified by Trial"
 
     verified_default = min(2.0, float(esd_allowance_per_side))
@@ -375,10 +379,7 @@ else:
         max_value=80.0,
         value=15.0,
         step=0.5,
-        help=(
-            "ค่าที่วัดจาก packed sample: Nominal packed H - Pure product H. "
-            "ควรรวม bottom/top bag และ fold ที่ครอบคลุมพื้นที่หลักแล้ว"
-        ),
+        help="Nominal packed H - Pure product H จาก sample จริง",
     )
 
     verified_local_peak_build_up = st.sidebar.number_input(
@@ -387,34 +388,24 @@ else:
         max_value=100.0,
         value=20.0,
         step=0.5,
-        help=(
-            "Local maximum build-up ที่บริเวณ fold ซ้อนหนาที่สุด: "
-            "Local max packed H - Pure product H"
-        ),
+        help="Local max packed H - Pure product H จากบริเวณ fold ซ้อนหนาที่สุด",
     )
 
-    nominal_bag_vertical_build_up = float(verified_nominal_build_up)
-    local_bag_vertical_build_up = max(
-        float(verified_local_peak_build_up),
-        nominal_bag_vertical_build_up,
+    base_bag_vertical_build_up = float(verified_nominal_build_up)
+    mouth_fold_layer_build_up = 0.0
+    side_fold_local_layer_build_up = max(
+        0.0,
+        float(verified_local_peak_build_up) - float(verified_nominal_build_up),
     )
-
-    # For a verified custom pack, the detailed layer split is not inferred.
-    # Keep the whole nominal value in Base/Verified build-up and expose only
-    # the additional local peak separately.
-    base_bag_vertical_build_up = nominal_bag_vertical_build_up
-    mouth_fold_vertical_build_up = 0.0
-    side_fold_local_build_up = (
-        local_bag_vertical_build_up - nominal_bag_vertical_build_up
-    )
+    fold_direction_mode = "Force Up-axis"
 
     if verified_local_peak_build_up < verified_nominal_build_up:
         st.sidebar.warning(
-            "Local-Max build-up ต่ำกว่า Nominal build-up จึงถูกปรับขึ้นให้เท่ากับ Nominal อัตโนมัติ"
+            "Local-Max build-up ต่ำกว่า Nominal build-up จึงใช้ Local-Max = Nominal สำหรับ screening"
         )
 
     st.sidebar.success(
-        "✅ Custom / Verified Packing: solver uses measured lateral + vertical packed-envelope data."
+        "✅ Custom / Verified Packing: uses measured lateral + vertical packed-envelope data."
     )
 
 vertical_clearance = st.sidebar.number_input(
@@ -430,35 +421,30 @@ vertical_clearance = st.sidebar.number_input(
 )
 
 # ------------------------------------------------------------
-# Derived lateral + vertical packed condition
+# Derived lateral preview
 # ------------------------------------------------------------
 total_esd_allowance = solver_esd_allowance_per_side * 2.0
 
-# Normal H-Up preview only.
+# Normal H-Up preview only. Full orientation-aware packed envelope is calculated
+# inside the solver because fold direction can change when the product is rotated.
 effective_product_w = p_w + total_esd_allowance
 effective_product_l = p_l + total_esd_allowance
-effective_product_h = (
-    p_h + vertical_clearance + nominal_bag_vertical_build_up
-)
-effective_local_peak_h = (
-    p_h + vertical_clearance + local_bag_vertical_build_up
-)
 
 if "Auto Feasibility" in esd_fit_model:
     st.sidebar.caption(
-        "Product Dimension = PURE product size. Folded preset uses pure product footprint "
-        "for lateral candidate generation, then back-calculates the allowable folded-bag trial envelope."
+        "Product Dimension = PURE product size. Auto Fold uses pure lateral footprint "
+        "to generate candidates, then back-calculates allowable base-bag growth. "
+        "Mouth/side fold build-up is routed by orientation."
     )
 else:
     st.sidebar.caption(
-        "Product Dimension = PURE product size. Solver lateral fit allowance = "
+        "Product Dimension = PURE product size. Solver base lateral fit allowance = "
         f"{fmt_num(solver_esd_allowance_per_side)} mm/side."
     )
 
 st.sidebar.info(
-    f"Normal H-Up • Solver footprint {fmt_num(effective_product_w)} × "
-    f"{fmt_num(effective_product_l)} mm • Nominal packed H {fmt_num(effective_product_h)} mm "
-    f"• Local max H {fmt_num(effective_local_peak_h)} mm"
+    f"Normal H-Up solver base footprint = {fmt_num(effective_product_w)} × "
+    f"{fmt_num(effective_product_l)} mm • Fold direction = {fold_direction_mode}"
 )
 
 st.sidebar.header("📦 4. Slot Capacity Mode")
@@ -536,7 +522,7 @@ span_mode = st.sidebar.selectbox(
 )
 
 st.sidebar.info(
-    "✅ V0.1.5.3.1: AMW Mouth + Side Fold = Recommended Default + Real Folding Method Model"
+    "✅ V0.1.5.4: Orientation-Aware Fold Vector + Flat/Edge Posture Detection + Unified Bag Envelope"
 )
 
 st.sidebar.caption(
@@ -629,6 +615,139 @@ def orientation_label(orient):
     return (
         f"{fmt_num(orient['flat_w'])} × {fmt_num(orient['flat_l'])} × {fmt_num(orient['vert_h'])} mm"
     )
+
+
+def resolve_fold_accumulation(
+    orient,
+    pw,
+    pl,
+    ph,
+    folding_method,
+    direction_mode,
+):
+    """
+    Resolve where folded air-bubble material accumulates for THIS orientation.
+
+    Solver coordinate convention:
+      - Floor X dimension = orient["flat_l"] / original axis floor_axis_2
+      - Floor Y dimension = orient["flat_w"] / original axis floor_axis_1
+      - Up dimension      = orient["vert_h"] / original axis up_axis
+
+    AUTO PHYSICS:
+      - thinnest original product axis is Up -> Flat-laid -> fold accumulates Up
+      - thinnest original product axis lies on floor -> Edge-standing -> fold accumulates
+        on that thin floor axis
+
+    This matches plate/PCBA behavior:
+      flat: 205×82 floor / 18.5 Up -> fold stacks vertically
+      edge: 18.5×205 floor / 82 Up -> fold stacks toward the 18.5 floor axis
+    """
+    if folding_method == "Standard Bag — No Fold":
+        return {
+            "posture": "No Fold",
+            "space": "NONE",
+            "original_axis": "-",
+            "label": "No additional fold build-up",
+        }
+
+    if folding_method == "Custom / Verified Packing":
+        return {
+            "posture": "Verified / Measured",
+            "space": "UP",
+            "original_axis": orient["up_axis"],
+            "label": "Verified vertical envelope",
+        }
+
+    dims = {"W": float(pw), "L": float(pl), "H": float(ph)}
+    up_axis = orient["up_axis"]
+    floor_y_axis = orient["floor_axis_1"]  # flat_w
+    floor_x_axis = orient["floor_axis_2"]  # flat_l
+
+    if direction_mode == "Force Up-axis":
+        return {
+            "posture": "Forced",
+            "space": "UP",
+            "original_axis": up_axis,
+            "label": f"Up-axis ({up_axis})",
+        }
+
+    if direction_mode == "Force Thin Floor Axis":
+        thin_floor_axis = min(
+            [floor_x_axis, floor_y_axis],
+            key=lambda axis: dims[axis],
+        )
+        space = "X" if thin_floor_axis == floor_x_axis else "Y"
+        return {
+            "posture": "Forced thin-floor",
+            "space": space,
+            "original_axis": thin_floor_axis,
+            "label": f"Floor-{space} / original {thin_floor_axis}",
+        }
+
+    # Auto orientation-aware behavior.
+    sorted_axes = sorted(dims, key=lambda axis: dims[axis])
+    thin_axis = sorted_axes[0]
+    second_axis = sorted_axes[1]
+
+    # If dimensions are nearly equal, avoid over-interpreting posture.
+    near_equal = dims[second_axis] <= dims[thin_axis] * 1.20
+
+    if near_equal:
+        return {
+            "posture": "General / near-equal",
+            "space": "UP",
+            "original_axis": up_axis,
+            "label": f"Up-axis ({up_axis}) — general-shape fallback",
+        }
+
+    if thin_axis == up_axis:
+        return {
+            "posture": "Flat-laid",
+            "space": "UP",
+            "original_axis": thin_axis,
+            "label": f"Up-axis ({thin_axis})",
+        }
+
+    if thin_axis == floor_x_axis:
+        return {
+            "posture": "Edge-standing",
+            "space": "X",
+            "original_axis": thin_axis,
+            "label": f"Floor-X / original {thin_axis}",
+        }
+
+    if thin_axis == floor_y_axis:
+        return {
+            "posture": "Edge-standing",
+            "space": "Y",
+            "original_axis": thin_axis,
+            "label": f"Floor-Y / original {thin_axis}",
+        }
+
+    # Defensive fallback.
+    return {
+        "posture": "General",
+        "space": "UP",
+        "original_axis": up_axis,
+        "label": f"Up-axis ({up_axis})",
+    }
+
+
+def directional_fold_components(
+    fold_info,
+    mouth_layer,
+    side_local_layer,
+):
+    """Return nominal mouth + local side fold additions as X/Y/Up vectors."""
+    mouth = {"X": 0.0, "Y": 0.0, "UP": 0.0}
+    side = {"X": 0.0, "Y": 0.0, "UP": 0.0}
+
+    space = fold_info["space"]
+    if space in mouth:
+        mouth[space] = float(mouth_layer)
+        side[space] = float(side_local_layer)
+
+    return mouth, side
 
 
 # ============================================================
@@ -934,6 +1053,8 @@ def calculate_fit_margin(
             "esd_headroom_x_per_side": 0.0,
             "esd_headroom_y_per_side": 0.0,
             "esd_headroom_per_side": 0.0,
+            "max_esd_x_per_side_current_layout": esd_total_allowance / 2.0,
+            "max_esd_y_per_side_current_layout": esd_total_allowance / 2.0,
             "max_esd_per_side_current_layout": esd_total_allowance / 2.0,
             "fit_margin_status": "CRITICAL",
             "fit_margin_note": "No valid slot data",
@@ -972,7 +1093,9 @@ def calculate_fit_margin(
     headroom = min(headroom_x, headroom_y)
 
     current_esd_per_side = esd_total_allowance / 2.0
-    max_esd_per_side = current_esd_per_side + headroom
+    max_esd_x_per_side = current_esd_per_side + headroom_x
+    max_esd_y_per_side = current_esd_per_side + headroom_y
+    max_esd_per_side = min(max_esd_x_per_side, max_esd_y_per_side)
 
     if headroom_x < headroom_y - 1e-9:
         limiting_direction = "X"
@@ -997,10 +1120,54 @@ def calculate_fit_margin(
         "esd_headroom_x_per_side": headroom_x,
         "esd_headroom_y_per_side": headroom_y,
         "esd_headroom_per_side": headroom,
+        "max_esd_x_per_side_current_layout": max_esd_x_per_side,
+        "max_esd_y_per_side_current_layout": max_esd_y_per_side,
         "max_esd_per_side_current_layout": max_esd_per_side,
         "fit_margin_status": status,
         "fit_margin_note": note,
         "limiting_floor_direction": limiting_direction,
+    }
+
+
+def calculate_local_floor_peak(
+    valid_slots,
+    local_target_l,
+    local_target_w,
+):
+    """
+    Check localized side-fold envelope against each current slot.
+
+    Negative reserve is not an automatic reject because the side-fold peak is
+    localized/compressible; it becomes an engineering warning / ranking penalty.
+    """
+    if not valid_slots:
+        return {
+            "local_reserve_x": 0.0,
+            "local_reserve_y": 0.0,
+            "local_overflow_x": 0.0,
+            "local_overflow_y": 0.0,
+            "local_overflow": 0.0,
+        }
+
+    rx = []
+    ry = []
+    for slot in valid_slots:
+        slot_x = slot["x_end"] - slot["x_start"]
+        slot_y = slot["y_end"] - slot["y_start"]
+        qx = max(1, int(slot["qty_x"]))
+        qy = max(1, int(slot["qty_y"]))
+        rx.append(slot_x - qx * local_target_l)
+        ry.append(slot_y - qy * local_target_w)
+
+    min_rx = min(rx)
+    min_ry = min(ry)
+
+    return {
+        "local_reserve_x": min_rx,
+        "local_reserve_y": min_ry,
+        "local_overflow_x": max(0.0, -min_rx),
+        "local_overflow_y": max(0.0, -min_ry),
+        "local_overflow": max(0.0, -min_rx, -min_ry),
     }
 
 
@@ -1015,11 +1182,10 @@ def solve_a10_partition_layouts(
     effective_esd_per_side,
     esd_model,
     folding_method,
+    fold_direction_mode,
     base_bag_vertical_buildup,
-    mouth_fold_vertical_buildup,
-    side_fold_local_buildup,
-    nominal_bag_vertical_buildup,
-    local_bag_vertical_buildup,
+    mouth_fold_layer_buildup,
+    side_fold_local_layer_buildup,
     vertical_clr,
     mode,
     slot_limit_basis,
@@ -1052,28 +1218,53 @@ def solve_a10_partition_layouts(
         if not feasible_systems:
             continue
 
-        # Lateral geometry and vertical packed height are deliberately separated.
-        # Folding can reduce W/L projected footprint, but the air-bubble / ESD bag
-        # still contributes physical build-up in the Up-axis.
-        target_w = ew + esd_total_allowance
-        target_l = el + esd_total_allowance
+        # ------------------------------------------------------------
+        # V0.1.5.4 — ORIENTATION-AWARE FOLD VECTOR
+        # ------------------------------------------------------------
+        fold_info = resolve_fold_accumulation(
+            orient,
+            pw,
+            pl,
+            ph,
+            folding_method,
+            fold_direction_mode,
+        )
+        mouth_vec, side_vec = directional_fold_components(
+            fold_info,
+            mouth_fold_layer_buildup,
+            side_fold_local_layer_buildup,
+        )
 
-        # Partition selection still references pure product height + explicit clearance.
+        # Floor X = flat_l, Floor Y = flat_w.
+        # Base lateral allowance is symmetric. Mouth fold is a nominal one-sided
+        # dimensional addition on the accumulation axis; side fold is a LOCAL peak.
+        target_l = el + esd_total_allowance + mouth_vec["X"]
+        target_w = ew + esd_total_allowance + mouth_vec["Y"]
+
+        local_target_l = target_l + side_vec["X"]
+        local_target_w = target_w + side_vec["Y"]
+
+        # Partition selection references pure product height + explicit clearance.
         partition_required_h = eh + vertical_clr
 
-        # V0.1.5.3 physical folding method:
-        # nominal packed height = product + base enclosure + mouth fold + clearance
-        # local maximum adds side-fold overlap only at the fold region.
+        # Base bag exists top+bottom regardless of posture. Extra fold thickness only
+        # contributes vertically when the resolved fold accumulation space is UP.
         base_vertical_build_up = base_bag_vertical_buildup
-        mouth_vertical_build_up = mouth_fold_vertical_buildup
-        side_local_vertical_build_up = side_fold_local_buildup
-        bag_vertical_build_up = nominal_bag_vertical_buildup
+        mouth_vertical_build_up = mouth_vec["UP"]
+        side_local_vertical_build_up = side_vec["UP"]
+
+        nominal_bag_vertical_build_up = (
+            base_vertical_build_up + mouth_vertical_build_up
+        )
+        local_bag_vertical_build_up = (
+            nominal_bag_vertical_build_up + side_local_vertical_build_up
+        )
 
         packed_unit_height = (
-            eh + vertical_clr + nominal_bag_vertical_buildup
+            eh + vertical_clr + nominal_bag_vertical_build_up
         )
         local_peak_unit_height = (
-            eh + vertical_clr + local_bag_vertical_buildup
+            eh + vertical_clr + local_bag_vertical_build_up
         )
 
         for system in feasible_systems:
@@ -1298,6 +1489,41 @@ def solve_a10_partition_layouts(
                         esd_total_allowance,
                     )
 
+                    current_base_allowance = esd_total_allowance / 2.0
+                    if "Auto Feasibility" in esd_model:
+                        visual_base_allowance_x = min(
+                            nominal_esd_per_side,
+                            max(0.0, fit_margin["max_esd_x_per_side_current_layout"]),
+                        )
+                        visual_base_allowance_y = min(
+                            nominal_esd_per_side,
+                            max(0.0, fit_margin["max_esd_y_per_side_current_layout"]),
+                        )
+                    else:
+                        visual_base_allowance_x = current_base_allowance
+                        visual_base_allowance_y = current_base_allowance
+
+                    visual_nominal_x = (
+                        el
+                        + 2.0 * visual_base_allowance_x
+                        + mouth_vec["X"]
+                    )
+                    visual_nominal_y = (
+                        ew
+                        + 2.0 * visual_base_allowance_y
+                        + mouth_vec["Y"]
+                    )
+                    visual_local_x = visual_nominal_x + side_vec["X"]
+                    visual_local_y = visual_nominal_y + side_vec["Y"]
+
+                    # Local floor peak is screened against the SAME envelope that is
+                    # shown in Top/Side views, including the selected Auto base-bag allowance.
+                    local_floor = calculate_local_floor_peak(
+                        valid_slots,
+                        visual_local_x,
+                        visual_local_y,
+                    )
+
                     option = {
                         "orientation_id": orient["orientation_id"],
                         "up_axis": orient["up_axis"],
@@ -1325,9 +1551,33 @@ def solve_a10_partition_layouts(
                         "base_bag_vertical_build_up": base_vertical_build_up,
                         "mouth_fold_vertical_build_up": mouth_vertical_build_up,
                         "side_fold_local_build_up": side_local_vertical_build_up,
-                        "nominal_bag_vertical_build_up": nominal_bag_vertical_buildup,
-                        "local_bag_vertical_build_up": local_bag_vertical_buildup,
+                        "nominal_bag_vertical_build_up": nominal_bag_vertical_build_up,
+                        "local_bag_vertical_build_up": local_bag_vertical_build_up,
                         "bag_folding_method": folding_method,
+                        "fold_direction_mode": fold_direction_mode,
+                        "packing_posture": fold_info["posture"],
+                        "fold_accumulation_space": fold_info["space"],
+                        "fold_accumulation_original_axis": fold_info["original_axis"],
+                        "fold_accumulation_label": fold_info["label"],
+                        "mouth_fold_x": mouth_vec["X"],
+                        "mouth_fold_y": mouth_vec["Y"],
+                        "mouth_fold_up": mouth_vec["UP"],
+                        "side_fold_x": side_vec["X"],
+                        "side_fold_y": side_vec["Y"],
+                        "side_fold_up": side_vec["UP"],
+                        "local_target_l": local_target_l,
+                        "local_target_w": local_target_w,
+                        "visual_base_allowance_x": visual_base_allowance_x,
+                        "visual_base_allowance_y": visual_base_allowance_y,
+                        "visual_nominal_envelope_x": visual_nominal_x,
+                        "visual_nominal_envelope_y": visual_nominal_y,
+                        "visual_local_envelope_x": visual_local_x,
+                        "visual_local_envelope_y": visual_local_y,
+                        "local_floor_reserve_x": local_floor["local_reserve_x"],
+                        "local_floor_reserve_y": local_floor["local_reserve_y"],
+                        "local_floor_overflow_x": local_floor["local_overflow_x"],
+                        "local_floor_overflow_y": local_floor["local_overflow_y"],
+                        "local_floor_overflow": local_floor["local_overflow"],
                         "partition_height_delta": partition_height_delta,
                         "partition_headroom": partition_headroom,
                         "package_protrusion": package_protrusion,
@@ -1392,6 +1642,8 @@ def solve_a10_partition_layouts(
                         "esd_headroom_x_per_side": fit_margin["esd_headroom_x_per_side"],
                         "esd_headroom_y_per_side": fit_margin["esd_headroom_y_per_side"],
                         "esd_headroom_per_side": fit_margin["esd_headroom_per_side"],
+                        "max_esd_x_per_side_current_layout": fit_margin["max_esd_x_per_side_current_layout"],
+                        "max_esd_y_per_side_current_layout": fit_margin["max_esd_y_per_side_current_layout"],
                         "max_esd_per_side_current_layout": fit_margin["max_esd_per_side_current_layout"],
                         "fit_margin_status": fit_margin["fit_margin_status"],
                         "fit_margin_note": fit_margin["fit_margin_note"],
@@ -1424,6 +1676,7 @@ def option_rank(opt):
         opt.get("variant_priority", 0),
         -opt["vert_h"],
         opt["qty_layer"],
+        -opt.get("local_floor_overflow", 0.0),
         -opt.get("local_peak_compression_required", 0.0),
         -opt.get("package_protrusion", 0.0),
         -opt["span_ratio"],
@@ -1581,21 +1834,17 @@ def draw_top_view_svg(opt):
     draw_w = opt["p_l_disp"] * scale
     draw_h = opt["p_w_disp"] * scale
 
-    is_auto_folded = "Auto Feasibility" in opt.get("esd_fit_model", "")
-    if is_auto_folded:
-        # Show the engineering TRIAL envelope, not the 0-mm candidate-generation
-        # envelope. Cap at company nominal when the grid allows more than nominal.
-        visual_allowance = min(
-            opt["nominal_esd_per_side"],
-            max(0.0, opt["max_esd_per_side_current_layout"]),
-        )
-        visual_envelope_label = "Auto Folded-Bag Trial Envelope"
-    else:
-        visual_allowance = opt["effective_esd_per_side"]
-        visual_envelope_label = "Packed Fit Envelope"
+    # The Top View and Side Section now project the SAME directional bag envelope.
+    nominal_env_w = opt["visual_nominal_envelope_x"] * scale
+    nominal_env_h = opt["visual_nominal_envelope_y"] * scale
+    local_env_w = opt["visual_local_envelope_x"] * scale
+    local_env_h = opt["visual_local_envelope_y"] * scale
 
-    env_w = (opt["p_l_disp"] + 2.0 * visual_allowance) * scale
-    env_h = (opt["p_w_disp"] + 2.0 * visual_allowance) * scale
+    visual_envelope_label = (
+        "Auto Folded-Bag Trial Envelope"
+        if "Auto Feasibility" in opt.get("esd_fit_model", "")
+        else "Packed Bag Envelope"
+    )
 
     # Product placement in every valid slot.
     for slot in valid_slots:
@@ -1608,13 +1857,25 @@ def draw_top_view_svg(opt):
             for ky in range(slot["qty_y"]):
                 cx = pad_x + slot["x_start"] * scale + kx * step_x + step_x / 2
                 cy = pad_y + slot["y_start"] * scale + ky * step_y + step_y / 2
-                # ESD packed envelope (blue dashed) surrounds the pure product.
-                erx = cx - env_w / 2
-                ery = cy - env_h / 2
+                # Nominal packed/trial envelope — blue dashed.
+                erx = cx - nominal_env_w / 2
+                ery = cy - nominal_env_h / 2
                 svg += (
-                    f'<rect x="{erx+1}" y="{ery+1}" width="{max(2,env_w-2)}" height="{max(2,env_h-2)}" '
-                    f'fill="#dbeafe" fill-opacity="0.28" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" rx="4" />'
+                    f'<rect x="{erx+1}" y="{ery+1}" width="{max(2,nominal_env_w-2)}" height="{max(2,nominal_env_h-2)}" '
+                    f'fill="#dbeafe" fill-opacity="0.25" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" rx="4" />'
                 )
+
+                # Local side-fold peak — purple dashed, only when it changes floor envelope.
+                if (
+                    local_env_w > nominal_env_w + 0.1
+                    or local_env_h > nominal_env_h + 0.1
+                ):
+                    lrx = cx - local_env_w / 2
+                    lry = cy - local_env_h / 2
+                    svg += (
+                        f'<rect x="{lrx+1}" y="{lry+1}" width="{max(2,local_env_w-2)}" height="{max(2,local_env_h-2)}" '
+                        f'fill="none" stroke="#7c3aed" stroke-width="1.1" stroke-dasharray="3,3" rx="4" />'
+                    )
 
                 rx = cx - draw_w / 2
                 ry = cy - draw_h / 2
@@ -1631,7 +1892,7 @@ def draw_top_view_svg(opt):
 
     svg += (
         f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" font-size="11" '
-        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available Groove • Green edge ticks = All Groove Positions • Blue dashed = {visual_envelope_label}</text>'
+        f'fill="#475569" text-anchor="middle">Red = Active Partition • Green dotted = Available Groove • Blue dashed = {visual_envelope_label} • Purple dashed = Local Fold Peak</text>'
     )
     svg += '</svg>'
     return svg
@@ -1641,12 +1902,51 @@ def draw_top_view_svg(opt):
 # SVG SIDE SECTION
 # ============================================================
 def draw_side_view_svg(opt):
-    scale_x = 1.34
-    scale_y = 1.75
-    pad_x = 64
-    pad_y = 65
+    """
+    Dynamic engineering section.
 
-    view_w = CARTON_L * scale_x + pad_x * 2
+    If fold accumulation is on Floor-Y, draw Y-Up so the lateral fold build-up is
+    actually visible. Otherwise draw X-Up. When fold accumulation is Up, X-Up is used.
+
+    This keeps the blue/purple bag envelope consistent with Smart Top Pattern.
+    """
+    fold_space = opt.get("fold_accumulation_space", "UP")
+
+    if fold_space == "Y":
+        plane = "Y-Up"
+        carton_span = CARTON_W
+        dividers = opt["y_dividers"]
+        pad_start = get_partition_system_for_option(opt)["y_pad_start"]
+        pad_end = get_partition_system_for_option(opt)["y_pad_end"]
+        pure_horizontal = opt["p_w_disp"]
+        nominal_horizontal = opt["visual_nominal_envelope_y"]
+        local_horizontal = opt["visual_local_envelope_y"]
+        horizontal_qty_key = "qty_y"
+        representative_key = "col_idx"
+        representative_value = 0
+        iterate_index_key = "row_idx"
+        floor_axis_label = f"Floor-Y / original {opt['floor_axis_1']}"
+    else:
+        plane = "X-Up"
+        carton_span = CARTON_L
+        dividers = opt["x_dividers"]
+        pad_start = get_partition_system_for_option(opt)["x_pad_start"]
+        pad_end = get_partition_system_for_option(opt)["x_pad_end"]
+        pure_horizontal = opt["p_l_disp"]
+        nominal_horizontal = opt["visual_nominal_envelope_x"]
+        local_horizontal = opt["visual_local_envelope_x"]
+        horizontal_qty_key = "qty_x"
+        representative_key = "row_idx"
+        representative_value = 0
+        iterate_index_key = "col_idx"
+        floor_axis_label = f"Floor-X / original {opt['floor_axis_2']}"
+
+    scale_x = 1.28
+    scale_y = 1.72
+    pad_x = 64
+    pad_y = 66
+
+    view_w = carton_span * scale_x + pad_x * 2
     view_h = CARTON_H * scale_y + pad_y * 2
 
     box_h = CARTON_H * scale_y
@@ -1657,17 +1957,14 @@ def draw_side_view_svg(opt):
     layer_pitch_px = opt["layer_pitch"] * scale_y
     pad_t_px = PAD_T * scale_y
 
-    base_total = opt["base_bag_vertical_build_up"]
-    base_each = base_total / 2.0
-    base_each_px = base_each * scale_y
-    mouth_px = opt["mouth_fold_vertical_build_up"] * scale_y
-    side_local_px = opt["side_fold_local_build_up"] * scale_y
-    clearance_px = opt["vertical_clearance"] * scale_y
+    pure_horizontal_px = pure_horizontal * scale_x
+    nominal_horizontal_px = nominal_horizontal * scale_x
+    local_horizontal_px = local_horizontal * scale_x
 
-    system = get_partition_system_for_option(opt)
-    x_start_pad = system["x_pad_start"]
-    x_end_pad = system["x_pad_end"]
-    envelope_w = x_end_pad - x_start_pad
+    base_total = opt["base_bag_vertical_build_up"]
+    base_each_px = (base_total / 2.0) * scale_y
+    mouth_up_px = opt["mouth_fold_up"] * scale_y
+    side_up_px = opt["side_fold_up"] * scale_y
 
     svg = (
         f'<svg width="100%" height="auto" viewBox="0 0 {view_w} {view_h}" '
@@ -1676,15 +1973,17 @@ def draw_side_view_svg(opt):
     )
 
     svg += (
-        f'<text x="{view_w/2}" y="28" font-family="system-ui,sans-serif" font-size="18" '
+        f'<text x="{view_w/2}" y="27" font-family="system-ui,sans-serif" font-size="17" '
         f'font-weight="700" fill="#0f172a" text-anchor="middle">'
-        f'SIDE SECTION — {opt.get("bag_folding_method","Bag Packing")}</text>'
+        f'SIDE SECTION — {plane} • Fold accumulation: {opt.get("fold_accumulation_label","-")}</text>'
     )
 
     svg += (
-        f'<rect x="{pad_x}" y="{pad_y}" width="{CARTON_L*scale_x}" height="{box_h}" '
+        f'<rect x="{pad_x}" y="{pad_y}" width="{carton_span*scale_x}" height="{box_h}" '
         f'fill="#f8fafc" stroke="#1e293b" stroke-width="4" rx="4" />'
     )
+
+    envelope_span = pad_end - pad_start
 
     for layer_idx in range(opt["layers"]):
         level_bottom = (
@@ -1695,134 +1994,111 @@ def draw_side_view_svg(opt):
         )
 
         svg += (
-            f'<rect x="{pad_x+x_start_pad*scale_x}" y="{level_bottom}" '
-            f'width="{envelope_w*scale_x}" height="{pad_t_px}" fill="#cbd5e1" stroke="#94a3b8" />'
+            f'<rect x="{pad_x+pad_start*scale_x}" y="{level_bottom}" '
+            f'width="{envelope_span*scale_x}" height="{pad_t_px}" '
+            f'fill="#cbd5e1" stroke="#94a3b8" />'
         )
 
         partition_top = level_bottom - part_h_px
 
-        for x in opt["x_dividers"]:
-            px = pad_x + x * scale_x
+        for d in dividers:
+            px = pad_x + d * scale_x
             svg += (
                 f'<line x1="{px}" y1="{level_bottom}" x2="{px}" y2="{partition_top}" '
                 f'stroke="#dc2626" stroke-width="3" />'
             )
 
-        for col_idx in range(len(opt["x_dividers"]) - 1):
+        for idx in range(len(dividers) - 1):
             matching_slot = next(
-                (s for s in opt["valid_slots"] if s["col_idx"] == col_idx and s["row_idx"] == 0),
+                (
+                    s for s in opt["valid_slots"]
+                    if s[iterate_index_key] == idx
+                    and s[representative_key] == representative_value
+                ),
                 None,
             )
             if matching_slot is None:
                 continue
 
-            slot_left = opt["x_dividers"][col_idx]
-            slot_right = opt["x_dividers"][col_idx + 1]
-            slot_span = slot_right - slot_left
-            qty_x = matching_slot["qty_x"]
+            seg_left = dividers[idx]
+            seg_right = dividers[idx + 1]
+            seg_span = seg_right - seg_left
+            qty_h = matching_slot[horizontal_qty_key]
             qty_z = matching_slot["qty_z"]
-            product_w_px = opt["p_l_disp"] * scale_x
-            step_x = slot_span * scale_x / qty_x
-            slot_start_px = pad_x + slot_left * scale_x
 
-            for kx in range(qty_x):
-                cx = slot_start_px + kx * step_x + step_x / 2
-                rx = cx - product_w_px / 2
+            step_h = seg_span * scale_x / qty_h
+            seg_start_px = pad_x + seg_left * scale_x
+
+            for kh in range(qty_h):
+                cx = seg_start_px + kh * step_h + step_h / 2
 
                 for kz in range(qty_z):
                     unit_bottom = level_bottom - nominal_unit_h_px * kz
                     nominal_top = unit_bottom - nominal_unit_h_px
                     local_top = unit_bottom - local_unit_h_px
 
-                    # Nominal packed envelope.
+                    # Blue nominal bag envelope — SAME dimension as Top View projection.
+                    erx = cx - nominal_horizontal_px / 2
                     svg += (
-                        f'<rect x="{rx}" y="{nominal_top}" width="{product_w_px}" '
-                        f'height="{nominal_unit_h_px}" fill="#dbeafe" fill-opacity="0.18" '
-                        f'stroke="#2563eb" stroke-width="1.1" stroke-dasharray="4,3" rx="3" />'
+                        f'<rect x="{erx}" y="{nominal_top}" '
+                        f'width="{nominal_horizontal_px}" height="{nominal_unit_h_px}" '
+                        f'fill="#dbeafe" fill-opacity="0.20" stroke="#2563eb" '
+                        f'stroke-width="1.1" stroke-dasharray="4,3" rx="3" />'
                     )
 
-                    # Local side-fold peak envelope.
-                    if side_local_px > 0:
-                        local_band_w = max(12.0, product_w_px * 0.42)
-                        local_x = cx - local_band_w / 2
+                    # Purple local peak envelope when floor or Up local fold increases envelope.
+                    if (
+                        local_horizontal_px > nominal_horizontal_px + 0.1
+                        or local_unit_h_px > nominal_unit_h_px + 0.1
+                    ):
+                        lrx = cx - local_horizontal_px / 2
                         svg += (
-                            f'<rect x="{local_x}" y="{local_top}" width="{local_band_w}" '
-                            f'height="{local_unit_h_px}" fill="none" '
-                            f'stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="3,3" rx="3" />'
-                        )
-
-                    # Bottom base bag layer.
-                    if base_each_px > 0:
-                        svg += (
-                            f'<rect x="{rx+1}" y="{unit_bottom-base_each_px}" width="{max(2,product_w_px-2)}" '
-                            f'height="{base_each_px}" fill="#bfdbfe" fill-opacity="0.75" stroke="#60a5fa" stroke-width="0.5" />'
+                            f'<rect x="{lrx}" y="{local_top}" '
+                            f'width="{local_horizontal_px}" height="{local_unit_h_px}" '
+                            f'fill="none" stroke="#7c3aed" stroke-width="1.1" '
+                            f'stroke-dasharray="3,3" rx="3" />'
                         )
 
                     # Pure product.
+                    rx = cx - pure_horizontal_px / 2
                     product_bottom = unit_bottom - base_each_px
                     product_top = product_bottom - pure_prod_h_px
                     svg += (
-                        f'<rect x="{rx+1}" y="{product_top}" width="{max(2,product_w_px-2)}" '
-                        f'height="{pure_prod_h_px}" fill="#fed7aa" stroke="#ea580c" stroke-width="1.1" rx="3" />'
+                        f'<rect x="{rx+1}" y="{product_top}" '
+                        f'width="{max(2,pure_horizontal_px-2)}" height="{pure_prod_h_px}" '
+                        f'fill="#fed7aa" stroke="#ea580c" stroke-width="1.1" rx="3" />'
                     )
 
-                    # Top base bag layer.
-                    top_base_y = product_top - base_each_px
+                    # Vertical base-bag layers.
                     if base_each_px > 0:
                         svg += (
-                            f'<rect x="{rx+1}" y="{top_base_y}" width="{max(2,product_w_px-2)}" '
-                            f'height="{base_each_px}" fill="#bfdbfe" fill-opacity="0.75" stroke="#60a5fa" stroke-width="0.5" />'
+                            f'<rect x="{rx+1}" y="{unit_bottom-base_each_px}" '
+                            f'width="{max(2,pure_horizontal_px-2)}" height="{base_each_px}" '
+                            f'fill="#bfdbfe" fill-opacity="0.68" stroke="#60a5fa" stroke-width="0.4" />'
                         )
-
-                    # Mouth fold = full-width extra layer over the product.
-                    mouth_y = top_base_y - mouth_px
-                    if mouth_px > 0:
                         svg += (
-                            f'<rect x="{rx+2}" y="{mouth_y}" width="{max(2,product_w_px-4)}" '
-                            f'height="{mouth_px}" fill="#93c5fd" fill-opacity="0.8" '
-                            f'stroke="#2563eb" stroke-width="0.6" />'
+                            f'<rect x="{rx+1}" y="{product_top-base_each_px}" '
+                            f'width="{max(2,pure_horizontal_px-2)}" height="{base_each_px}" '
+                            f'fill="#bfdbfe" fill-opacity="0.68" stroke="#60a5fa" stroke-width="0.4" />'
                         )
 
-                    # Side fold = LOCAL peak only, narrower than full product width.
-                    if side_local_px > 0:
-                        side_w = max(12.0, product_w_px * 0.42)
+                    # Fold build-up is shown vertically ONLY if accumulation is Up.
+                    if mouth_up_px > 0:
+                        mouth_y = product_top - base_each_px - mouth_up_px
+                        svg += (
+                            f'<rect x="{rx+2}" y="{mouth_y}" width="{max(2,pure_horizontal_px-4)}" '
+                            f'height="{mouth_up_px}" fill="#93c5fd" fill-opacity="0.80" '
+                            f'stroke="#2563eb" stroke-width="0.5" />'
+                        )
+
+                    if side_up_px > 0:
+                        side_w = max(12.0, pure_horizontal_px * 0.42)
                         side_x = cx - side_w / 2
-                        side_y = mouth_y - side_local_px
+                        side_y = nominal_top - side_up_px
                         svg += (
-                            f'<rect x="{side_x}" y="{side_y}" width="{side_w}" '
-                            f'height="{side_local_px}" fill="#c4b5fd" fill-opacity="0.85" '
-                            f'stroke="#7c3aed" stroke-width="0.7" rx="2" />'
+                            f'<rect x="{side_x}" y="{side_y}" width="{side_w}" height="{side_up_px}" '
+                            f'fill="#c4b5fd" fill-opacity="0.85" stroke="#7c3aed" stroke-width="0.6" rx="2" />'
                         )
-
-                    # Optional engineering clearance shown above nominal package.
-                    if clearance_px > 0:
-                        svg += (
-                            f'<line x1="{rx}" y1="{nominal_top}" x2="{rx+product_w_px}" y2="{nominal_top}" '
-                            f'stroke="#0f766e" stroke-width="0.8" stroke-dasharray="2,2" />'
-                        )
-
-        # Right-side partition/local peak annotation.
-        gx = pad_x + (x_end_pad - 18) * scale_x
-        nominal_stack_top = level_bottom - opt["packed_stack_height"] * scale_y
-        local_stack_top = level_bottom - opt["local_peak_stack_height"] * scale_y
-
-        if opt["package_protrusion"] > 0:
-            svg += (
-                f'<text x="{gx+5}" y="{partition_top+12}" '
-                f'font-family="system-ui,sans-serif" font-size="9.5" font-weight="700" fill="#b45309">'
-                f'Nominal above partition: {fmt_num(opt["package_protrusion"])} mm</text>'
-            )
-
-        if opt["local_peak_package_protrusion"] > 0:
-            svg += (
-                f'<line x1="{gx}" y1="{partition_top}" x2="{gx}" y2="{local_stack_top}" '
-                f'stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="3,3" />'
-            )
-            svg += (
-                f'<text x="{gx+5}" y="{max(pad_y+12, local_stack_top+10)}" '
-                f'font-family="system-ui,sans-serif" font-size="9.5" font-weight="700" fill="#6d28d9">'
-                f'Local peak above partition: {fmt_num(opt["local_peak_package_protrusion"])} mm</text>'
-            )
 
     top_pad_y = (
         pad_y
@@ -1831,34 +2107,28 @@ def draw_side_view_svg(opt):
         - pad_t_px
     )
     svg += (
-        f'<rect x="{pad_x+x_start_pad*scale_x}" y="{top_pad_y}" width="{envelope_w*scale_x}" '
-        f'height="{pad_t_px}" fill="#cbd5e1" stroke="#94a3b8" />'
+        f'<rect x="{pad_x+pad_start*scale_x}" y="{top_pad_y}" '
+        f'width="{envelope_span*scale_x}" height="{pad_t_px}" '
+        f'fill="#cbd5e1" stroke="#94a3b8" />'
     )
 
     gap_px = max(0.0, opt["carton_top_air_gap"]) * scale_y
     if gap_px > 0:
         svg += (
-            f'<rect x="{pad_x+x_start_pad*scale_x}" y="{pad_y}" '
-            f'width="{envelope_w*scale_x}" height="{gap_px}" '
-            f'fill="#f1f5f9" opacity="0.7" stroke="#94a3b8" stroke-dasharray="4,4" />'
+            f'<rect x="{pad_x+pad_start*scale_x}" y="{pad_y}" '
+            f'width="{envelope_span*scale_x}" height="{gap_px}" '
+            f'fill="#f1f5f9" opacity="0.65" stroke="#94a3b8" stroke-dasharray="4,4" />'
         )
 
     svg += (
-        f'<text x="{view_w/2}" y="{pad_y+max(16,gap_px/2+4)}" '
-        f'font-family="system-ui,sans-serif" font-size="11" font-weight="700" '
-        f'fill="#64748b" text-anchor="middle">Nominal Carton Top Air Gap: '
-        f'{fmt_num(opt["carton_top_air_gap"])} mm</text>'
-    )
-
-    summary_y = view_h - 18
-    svg += (
-        f'<text x="{view_w/2}" y="{summary_y}" font-family="system-ui,sans-serif" '
+        f'<text x="{view_w/2}" y="{view_h-30}" font-family="system-ui,sans-serif" '
         f'font-size="10.2" fill="#475569" text-anchor="middle">'
-        f'Nominal packed H = {fmt_num(opt["packed_unit_height"])} mm • '
-        f'Local max H = {fmt_num(opt["local_peak_unit_height"])} mm • '
-        f'Base {fmt_num(opt["base_bag_vertical_build_up"])} + '
-        f'Mouth {fmt_num(opt["mouth_fold_vertical_build_up"])} + '
-        f'Side-local {fmt_num(opt["side_fold_local_build_up"])} mm</text>'
+        f'Horizontal plane: {floor_axis_label} • Blue = nominal bag envelope • Purple = local fold peak</text>'
+    )
+    svg += (
+        f'<text x="{view_w/2}" y="{view_h-14}" font-family="system-ui,sans-serif" '
+        f'font-size="10.2" fill="#475569" text-anchor="middle">'
+        f'Nominal H {fmt_num(opt["packed_unit_height"])} mm • Local max H {fmt_num(opt["local_peak_unit_height"])} mm</text>'
     )
 
     svg += '</svg>'
@@ -1968,7 +2238,27 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
     vh3.metric("Side Fold Local Peak", f"{fmt_num(opt['side_fold_local_build_up'])} mm")
     vh4.metric("Layer Pitch", f"{fmt_num(opt['layer_pitch'])} mm")
 
-    st.caption(f"Folding method: **{opt.get('bag_folding_method','-')}**")
+    pf1, pf2, pf3 = st.columns(3)
+    pf1.metric("Detected Packing Posture", opt.get("packing_posture", "-"))
+    pf2.metric("Fold Accumulation", opt.get("fold_accumulation_label", "-"))
+    pf3.metric(
+        "Local Floor Peak Overflow",
+        f"{fmt_num(opt.get('local_floor_overflow', 0.0))} mm",
+    )
+
+    st.caption(
+        f"Folding method: **{opt.get('bag_folding_method','-')}** • "
+        f"Direction mode: **{opt.get('fold_direction_mode','-')}**"
+    )
+
+    if opt.get("local_floor_overflow", 0.0) > 0:
+        st.warning(
+            "⚠️ **Local fold peak reaches beyond the nominal slot envelope** — "
+            f"local floor peak exceeds the current slot by up to "
+            f"**{fmt_num(opt['local_floor_overflow'])} mm**. "
+            "Because this is localized/compressible fold material, the layout is not auto-rejected, "
+            "but this is exactly the condition that should trigger a packing trial or groove/layout review."
+        )
 
     if opt["package_protrusion"] > 0:
         st.warning(
@@ -1999,16 +2289,14 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
         )
 
     st.caption(
-        f"Up-axis model: Product {fmt_num(opt['p_h_disp'])} + "
-        f"Base enclosure {fmt_num(opt['base_bag_vertical_build_up'])} + "
-        f"Mouth fold {fmt_num(opt['mouth_fold_vertical_build_up'])} = "
-        f"Nominal packed H {fmt_num(opt['packed_unit_height'])} mm; "
-        f"+ Side-fold local peak {fmt_num(opt['side_fold_local_build_up'])} = "
-        f"Local max H {fmt_num(opt['local_peak_unit_height'])} mm."
+        f"Directional fold vector — Mouth: "
+        f"X +{fmt_num(opt['mouth_fold_x'])}, Y +{fmt_num(opt['mouth_fold_y'])}, Up +{fmt_num(opt['mouth_fold_up'])} mm • "
+        f"Side local: X +{fmt_num(opt['side_fold_x'])}, Y +{fmt_num(opt['side_fold_y'])}, Up +{fmt_num(opt['side_fold_up'])} mm. "
+        f"Base top/bottom bag build-up remains {fmt_num(opt['base_bag_vertical_build_up'])} mm in Up-axis."
     )
 
     # --------------------------------------------------------
-    # V0.1.5.3.1 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
+    # V0.1.5.4 — MODEL-AWARE FIT MARGIN / FOLDED-BAG FEASIBILITY
     # --------------------------------------------------------
     is_auto_folded = "Auto Feasibility" in opt.get("esd_fit_model", "")
     is_verified_folded = "Verified by Trial" in opt.get("esd_fit_model", "")
@@ -2019,9 +2307,15 @@ def render_result(opt, title, status_tone="good", comparison_text=None):
         reduction_required = max(0.0, nominal - folded_limit)
 
         fm1, fm2, fm3, fm4 = st.columns(4)
-        fm1.metric("Min Slot Reserve X", f"{fmt_num(opt['min_slot_reserve_x'])} mm")
-        fm2.metric("Min Slot Reserve Y", f"{fmt_num(opt['min_slot_reserve_y'])} mm")
-        fm3.metric("Required Folded Bag ≤", f"{fmt_num(folded_limit)} mm/side")
+        fm1.metric(
+            "Base Bag Limit X",
+            f"{fmt_num(max(0.0,opt['max_esd_x_per_side_current_layout']))} mm/side",
+        )
+        fm2.metric(
+            "Base Bag Limit Y",
+            f"{fmt_num(max(0.0,opt['max_esd_y_per_side_current_layout']))} mm/side",
+        )
+        fm3.metric("Limiting Base Bag ≤", f"{fmt_num(folded_limit)} mm/side")
         fm4.metric("Reduction vs Nominal", f"{fmt_num(reduction_required)} mm/side")
 
         if folded_limit + 1e-9 >= nominal:
@@ -2164,11 +2458,10 @@ with st.spinner("Evaluating Carton A10 groove-based partition layouts..."):
         solver_esd_allowance_per_side,
         esd_fit_model,
         bag_folding_method,
+        fold_direction_mode,
         base_bag_vertical_build_up,
-        mouth_fold_vertical_build_up,
-        side_fold_local_build_up,
-        nominal_bag_vertical_build_up,
-        local_bag_vertical_build_up,
+        mouth_fold_layer_build_up,
+        side_fold_local_layer_build_up,
         vertical_clearance,
         packing_mode,
         slot_limit_basis,
@@ -2203,7 +2496,7 @@ best_locked = max(locked_options, key=option_rank) if locked_options else None
 # ============================================================
 st.title("📦 Auto-Select Partition Layout Design with Carton A10")
 st.caption(
-    f"{APP_VERSION} • {MODULE_NAME} — AMW Mouth + Side Fold Default + Real Folding Method Model + Local Peak Screening"
+    f"{APP_VERSION} • {MODULE_NAME} — Orientation-Aware Fold Direction + Unified Bag Envelope + AMW Fold Default"
 )
 st.caption(
     "Geometry Sync Guard: active red partition lines are validated against the current audited green groove centerlines before ranking/rendering."
@@ -2215,22 +2508,16 @@ wc1.metric("Carton A10 ID", f"{int(CARTON_L)} × {int(CARTON_W)} × {int(CARTON_
 wc2.metric("Pure Product", f"{fmt_num(p_w)} × {fmt_num(p_l)} × {fmt_num(p_h)} mm")
 wc3.metric("Nominal ESD", f"{fmt_num(esd_allowance_per_side)} mm / side")
 wc4.metric(
-    "Solver Lateral Fit",
+    "Solver Base Lateral Fit",
     "AUTO" if "Auto Feasibility" in esd_fit_model else f"{fmt_num(solver_esd_allowance_per_side)} mm / side",
 )
-wc5.metric("H-Up Nominal H", f"{fmt_num(effective_product_h)} mm")
-wc6.metric("H-Up Local Max H", f"{fmt_num(effective_local_peak_h)} mm")
+wc5.metric("Bubble Build-up / Layer", f"{fmt_num(bubble_build_up_per_layer)} mm")
+wc6.metric("Fold Direction", "AUTO" if fold_direction_mode.startswith("Auto") else fold_direction_mode)
 
 st.info(
-    f"**Normal H-Up Effective Condition:** Solver footprint {fmt_num(effective_product_w)} × "
-    f"{fmt_num(effective_product_l)} mm • Nominal packed H {fmt_num(effective_product_h)} mm • "
-    f"Local max fold H {fmt_num(effective_local_peak_h)} mm. "
-    f"Folding method = **{bag_folding_method}**. "
-    + (
-        "Auto RFQ uses pure footprint for lateral candidate generation, then back-calculates the folded lateral trial target."
-        if "Auto Feasibility" in esd_fit_model
-        else f"Lateral solver adds +{fmt_num(total_esd_allowance)} mm per floor dimension."
-    )
+    f"**Orientation-aware folding is active.** Folding method = **{bag_folding_method}**. "
+    "Each candidate orientation independently resolves Flat-laid vs Edge-standing and routes "
+    "mouth/side fold build-up into Floor-X, Floor-Y or Up-axis."
 )
 
 allowed_txt = ["H-Up"]
@@ -2241,8 +2528,8 @@ if allow_w_up:
 st.info("Allowed Product Orientation: **" + ", ".join(allowed_txt) + "**")
 
 st.caption(
-    "V0.1.5.3.1 keeps the real folding workflow and makes Mouth + Side Fold — AMW Standard the recommended default. "
-    "Mouth Fold Only remains available as a special-case option when the bag size is already close to the product footprint."
+    "V0.1.5.4 makes fold physics orientation-aware. Flat-laid parts route fold build-up Up; edge-standing plate/PCBA parts route it toward the thin floor axis. "
+    "Top and Side views now use the same directional bag envelope and show local fold peaks separately."
 )
 
 st.divider()
@@ -2361,6 +2648,9 @@ with st.expander("📊 Layout Scenario Explorer", expanded=False):
                     "Partition": f"{int(opt['part_height'])} mm",
                     "Long Partition Variant": opt.get("long_partition_name", ""),
                     "Folding Method": opt.get("bag_folding_method", ""),
+                    "Packing Posture": opt.get("packing_posture", ""),
+                    "Fold Accumulation": opt.get("fold_accumulation_label", ""),
+                    "Local Floor Overflow": round(opt.get("local_floor_overflow", 0.0), 2),
                     "ESD Fit Model": "Folded" if opt.get("esd_fit_model", "").startswith("Folded") else "Standard",
                     "Slot Limit": (
                         f"Total {opt.get('max_total_pcs_per_slot', 1)} pcs/slot"
@@ -2414,13 +2704,14 @@ with st.expander("🧠 Solver / Engineering Note", expanded=False):
 - **Axis identity is tracked explicitly:** the solver no longer decides Fixed-H by comparing equal dimension values.
 - **Partition Topology Validation:** layouts must use both partition directions and form an interlocked grid. A single giant 1×1 cell is rejected.
 - **Bag Folding Method:** current method = **{bag_folding_method}**.
-- **Standard Bag — No Fold:** lateral fit uses the full company nominal allowance; Up-axis includes one bubble layer below + one above the product.
-- **Mouth Fold Only:** lateral layout uses Auto Feasibility; the mouth flap adds one extra bubble layer to the **nominal** packed height.
-- **Mouth + Side Fold — AMW Standard:** follows the actual reference process `Insert → Mouth Fold → Side Fold`. The mouth fold is included in nominal packed height; the side fold is modeled as a **localized maximum peak**, not a full-area layer.
-- **Auto Folded-Bag Feasibility (RFQ):** lateral candidate grids start from pure product footprint and the tool back-calculates the maximum effective folded lateral growth per side that preserves the selected grid/capacity.
-- **Physical volume transfer:** folding reduces projected W/L excess but does not remove bag volume. Current base enclosure = **{fmt_num(base_bag_vertical_build_up)} mm**, mouth-fold build-up = **{fmt_num(mouth_fold_vertical_build_up)} mm**, side-fold local peak = **{fmt_num(side_fold_local_build_up)} mm**.
-- **Nominal vs local height:** nominal full-area height is used for layer pitch / automatic carton-height pass-fail. Local side-fold peak is screened separately. If local peaks would exceed carton height when perfectly aligned, the tool reports required compression/staggering but does not auto-reject because the peak is localized and compressible.
-- **Custom / Verified Packing:** use measured lateral allowance, nominal packed-height build-up and local maximum build-up from a physical packing trial.
+- **Orientation-Aware Fold Direction:** current direction mode = **{fold_direction_mode}**. For each product orientation, the solver maps original W/L/H into Floor-X / Floor-Y / Up and resolves where folded material accumulates.
+- **Auto posture rule:** if the thinnest original product axis is Up, the product is treated as **Flat-laid** and fold build-up accumulates in Up-axis. If the thinnest axis lies on the floor, the product is treated as **Edge-standing** and fold build-up accumulates on that thin floor axis.
+- **Example:** a plate/PCBA `205×82×18.5` laid flat (`18.5 Up`) receives fold build-up in Up. The same product edge-standing (`18.5×205 floor, 82 Up`) receives additional fold build-up toward the `18.5` floor axis.
+- **Base bag is not deleted by folding:** top/bottom bag enclosure remains in Up-axis. Auto Fold only back-calculates the effective BASE lateral bag growth allowed by the selected slot; mouth/side fold layers are then added on the resolved fold axis.
+- **Mouth Fold:** treated as nominal build-up on the resolved accumulation axis. **Side Fold:** treated as a localized peak on the same axis.
+- **Top / Side consistency:** Smart Top Pattern and Side Section project the same directional nominal envelope (blue) and local fold peak (purple). Side Section automatically switches to X-Up or Y-Up when needed so a floor-axis fold build-up is visible.
+- **Local fold peak overflow:** a localized/compressible peak is not auto-rejected, but any overlap beyond the slot is explicitly warned and should trigger packing trial / groove review.
+- **Custom / Verified Packing:** measured envelope values remain available when actual packing samples exist.
 - **Fit Margin / Critical Boundary:** each valid slot is checked for remaining X/Y reserve at the CURRENT selected capacity. The tool converts that reserve into additional allowable ESD mm/side and reports the approximate ESD limit before the current grid/capacity loses nominal fit.
 - **Fit Margin limitation:** this is nominal geometry only; Product tolerance, ESD bag forming variation, partition die-cut tolerance and assembly deformation are not included.
 - **Vertical / Top Clearance:** current value = **{fmt_num(vertical_clearance)} mm**. Partition protection height is referenced to **Pure Up-axis + Vertical Clearance**; physical carton-height screening separately adds base bag + fold build-up.
